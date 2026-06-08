@@ -1,0 +1,54 @@
+[package]
+name = "car"
+version = "0.1.0"
+edition = "2021"
+description = "NFE — CARTEN M210 autonomous car control loop (PREEMPT_RT / Tokio)"
+
+# ── Binaries ──────────────────────────────────────────────────────────────
+
+[[bin]]
+name = "car"
+path = "src/main.rs"
+
+[[bin]]
+name = "car-diag"
+path = "src/bin/diag.rs"
+
+# ── Dependencies ──────────────────────────────────────────────────────────
+
+[dependencies]
+# Async runtime — current_thread, stays on core 3 (CPUAffinity)
+tokio = { version = "1", features = ["rt", "time", "sync", "macros", "signal"] }
+
+# Structured logging → journald when running under systemd
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-journald = "0.3"
+
+# GPIO, I2C, hardware PWM — Linux/RPi only
+rppal = "0.18"
+
+# Serial port for LIDAR UART
+serialport = "4"
+
+# Fast non-poisoning RwLock for sensor state shared between threads
+parking_lot = "0.12"
+
+# systemd sd_notify + watchdog
+libsystemd = "0.7"
+
+# mlockall
+libc = "0.2"
+
+# Error handling
+anyhow = "1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+
+[profile.dev]
+# Faster iteration on the Pi during development
+opt-level = 1

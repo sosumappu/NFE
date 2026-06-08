@@ -1,0 +1,128 @@
+{
+  config,
+  pkgs,
+  lib,
+  ...
+}: {
+  options.services.car = {
+    enable = lib.mkEnableOption "autonomous car control service";
+
+    package = lib.mkOption {
+      type = lib.types.package;
+      description = "The car control binary package";
+    };
+
+    logRingBufferSize = lib.mkOption {
+      type = lib.types.str;
+      default = "10M";
+      description = "Size of the in-memory log ring buffer";
+    };
+  };
+
+  config = lib.mkIf config.services.car.enable {
+    security.pam.loginLimits = [
+      {
+        domain = "car";
+        type = "-";
+        item = "memlock";
+        value = "unlimited";
+      }
+      {
+        domain = "car";
+        type = "-";
+        item = "rtprio";
+        value = "99";
+      }
+    ];
+
+    # Dedicated user with GPIO/I2C/SPI/UART access
+    users.users.car = {
+      isSystemUser = true;
+      group = "car";
+      extraGroups = ["gpio" "i2c" "spi" "dialout" "tty"];
+      description = "Car control service user";
+    };
+    users.groups.car = {};
+    # groupes non crée a l'initialisation
+    users.groups.i2c = {};
+    users.groups.gpio = {};
+    users.groups.spi = {};
+
+    systemd.services.car = {
+      description = "Autonomous RC car control loop";
+      documentation = ["https://github.com/sosumappu/nfe"];
+
+      wantedBy = ["multi-user.target"];
+      after = ["network.target" "systemd-udevd.service"];
+      requires = ["systemd-udevd.service"];
+
+      serviceConfig = {
+        ExecStart = "${config.services.car.package}/bin/car";
+
+        User = "car";
+        Group = "car";
+
+        # augmente la priorité du SHCED_FIFO à 50.
+        CPUSchedulingPolicy = "fifo";
+        CPUSchedulingPriority = 50;
+        CPUAffinity = "3"; # pin le coeur
+
+        # ── Memory locking ────────────────────────────────────────
+        # Prevents page faults during the control loop
+        LimitMEMLOCK = "infinity";
+
+        # ── Restart policy ────────────────────────────────────────
+        Restart = "always";
+        RestartSec = "500ms";
+
+        # ── Watchdog integration ──────────────────────────────────
+        # systemd kills the service if it doesn't notify within 5s
+        # The Rust watchdog calls sd_notify("WATCHDOG=1") each tick
+        WatchdogSec = "5s";
+        NotifyAccess = "main";
+
+        # ── Logging ───────────────────────────────────────────────
+        # journald ring buffer — tail with: ssh nfe journalctl -u car -f
+        LogRateLimitIntervalSec = 0;
+        LogRateLimitBurst = 0;
+        SyslogIdentifier = "car";
+
+        # ── Capabilities ──────────────────────────────────────────
+        AmbientCapabilities = ["CAP_SYS_NICE" "CAP_IPC_LOCK"];
+        CapabilityBoundingSet = ["CAP_SYS_NICE" "CAP_IPC_LOCK"];
+
+        # ── Security hardening (compatible with RT) ───────────────
+        NoNewPrivileges = true;
+        ProtectSystem = "strict";
+        ProtectHome = true;
+        PrivateTmp = true;
+        # Allow GPIO/I2C/UART device access
+        DeviceAllow = [
+          "/dev/gpiochip0 rw"
+          "/dev/i2c-1 rw"
+          "/dev/ttyAMA0 rw" # LIDAR UART
+          "/dev/ttyUSB0 rw" # LIDAR USB fallback
+        ];
+        DevicePolicy = "closed";
+      };
+
+      # Environment passed to the control binary
+      environment = {
+        RUST_LOG = "info";
+        CAR_CONTROL_HZ = "100";
+        CAR_WATCHDOG_TICKS = "3";
+      };
+    };
+
+    # udev rules: expose GPIO/I2C to car group without root
+    services.udev.extraRules = ''
+      # GPIO
+      SUBSYSTEM=="gpio", GROUP="gpio", MODE="0660"
+      # I2C (IMU)
+      SUBSYSTEM=="i2c-dev", GROUP="i2c", MODE="0660"
+      # LIDAR UART
+      SUBSYSTEM=="tty", ATTRS{product}=="RPLidar*", GROUP="dialout", MODE="0660", SYMLINK+="lidar"
+      SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", GROUP="dialout", MODE="0660", SYMLINK+="lidar"
+    '';
+  };
+}

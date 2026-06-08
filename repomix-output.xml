@@ -1,0 +1,3023 @@
+This file is a merged representation of a subset of the codebase, containing specifically included files and files not matching ignore patterns, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of a subset of the repository's contents that is considered the most important context.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Only files matching these patterns are included: **/*
+- Files matching these patterns are excluded: **/*.log, **/uv.lock, **/package-lock.json, **/.env.*, **/.*.env, **/.env, **/.envrc, **/mise.toml, **/mise.*.toml, **/Cargo.lock, **/node_modules, **/target, **/dist, **/build, **/output.txt, **/yarn.lock
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+hosts/
+  nfe/
+    configuration.nix
+modules/
+  car-service.nix
+  preempt-rt.nix
+packages/
+  car-software/
+    src/
+      bin/
+        diag.rs
+      control/
+        actuate.rs
+        lqr.rs
+        mod.rs
+        pid.rs
+        watchdog.rs
+      sensors/
+        imu.rs
+        lidar.rs
+        mod.rs
+        sonar.rs
+      init.rs
+      main.rs
+      state.rs
+    Cargo.toml
+    default.nix
+.gitignore
+flake.lock
+flake.nix
+README.md
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path="hosts/nfe/configuration.nix">
+{
+  config,
+  pkgs,
+  lib,
+  nixos-raspberrypi,
+  ...
+}: {
+  imports = [
+    nixos-raspberrypi.nixosModules.raspberry-pi-5.base
+    nixos-raspberrypi.nixosModules.raspberry-pi-5.page-size-16k
+
+    ../modules/preempt-rt.nix # patch pour le real time
+    ../modules/car-service.nix # car.service systemd unit
+  ];
+
+  networking.hostName = "nfe";
+  time.timeZone = "UTC";
+
+  users.users.localhost = {
+    isNormalUser = true;
+    extraGroups = ["wheel" "gpio" "i2c" "spi" "dialout" "tty" "video"];
+    # Set a real password with: passwd localhost  — or use hashedPassword
+    initialHashedPassword = ""; # passwordless for initial flash; harden post-deploy
+    openssh.authorizedKeys.keys = [
+      "ssh-ed25519
+AAAAC3NzaC1lZDI1NTE5AAAAIOF1uj9DgHdyYxOezFk2GhrgdFR8DWoXXVr/O2g2CMfG
+adelarab.works@gmail.com"
+    ];
+  };
+
+  users.users.root = {
+    initialHashedPassword = "";
+    openssh.authorizedKeys.keys = [
+      "ssh-ed25519
+AAAAC3NzaC1lZDI1NTE5AAAAIOF1uj9DgHdyYxOezFk2GhrgdFR8DWoXXVr/O2g2CMfG
+adelarab.works@gmail.com"
+    ];
+  };
+
+  security.sudo = {
+    enable = true; # sudo snas password pour wheels
+    wheelNeedsPassword = false;
+  };
+  security.polkit.enable = true;
+
+  services.getty.autologinUser = "localhost";
+
+  services.openssh = {
+    enable = true;
+    settings = {
+      PermitRootLogin = "prohibit-password"; # key-only root
+      PasswordAuthentication = false;
+      KbdInteractiveAuthentication = false;
+    };
+    extraConfig = ''
+      AllowUsers localhost root
+    '';
+  };
+
+  systemd.services.sshd.stopIfChanged = false;
+
+  networking.useNetworkd = true;
+  networking.firewall = {
+    enable = true;
+    allowedTCPPorts = [22];
+    allowedUDPPorts = [5353]; # mDNS — reach as nfe.local
+    logRefusedConnections = false;
+  };
+  systemd.network.networks = {
+    "99-ethernet-default-dhcp".networkConfig.MulticastDNS = "yes";
+    "99-wireless-client-dhcp".networkConfig.MulticastDNS = "yes";
+  };
+  networking = {
+    wireless = {
+      enable = true;
+      networks = {
+        "Freebox-0B1620" = {
+          pskRaw = "caa3fbb62dfe3db0afd267a52470f178e574bf985145a1f51c0caaf0c54b13f9";
+        };
+      };
+    };
+    networkmanager.enable = lib.mkForce false;
+  };
+
+  hardware.i2c.enable = true; # IMU (6-DOF)
+  hardware.raspberry-pi.config = {
+    all = {
+      # [all] conditional filter, https://www.raspberrypi.com/documentation/computers/config_txt.html#conditional-filters
+
+      options = {
+        # https://www.raspberrypi.com/documentation/computers/config_txt.html#enable_uart
+        # in conjunction with `console=serial0,115200` in kernel command line (`cmdline.txt`)
+        # creates a serial console, accessible using GPIOs 14 and 15 (pins
+        #  8 and 10 on the 40-pin header)
+        # enable_uart = {
+        #   enable = true;
+        #   value = true;
+        # };
+        # https://www.raspberrypi.com/documentation/computers/config_txt.html#uart_2ndstage
+        # enable debug logging to the UART, also automatically enables
+        # UART logging in `start.elf`
+        # uart_2ndstage = {
+        #   enable = true;
+        #   value = true;
+        # };
+      };
+
+      # Base DTB parameters
+      # https://github.com/raspberrypi/linux/blob/a1d3defcca200077e1e382fe049ca613d16efd2b/arch/arm/boot/dts/overlays/README#L132
+      base-dt-params = {
+        i2c_arm = {
+          enable = true;
+          value = "on";
+        };
+      };
+
+      dt-overlays = {
+        # https://stackoverflow.com/questions/60066790/why-does-my-rpi-uart0-ttyama0-freezes-when-bluetooth-disabled
+        # disable-bt = {
+        #   enable = true; # Pas nécessaire car connecter via USB
+        # };
+        #https://github.com/raspberrypi/firmware/blob/master/boot/overlays/README
+        pwm-2chan = {
+          enable = true;
+          params = {
+            pin = {
+              enable = true;
+              value = 18;
+            };
+            pin2 = {
+              enable = true;
+              value = 19;
+            };
+            func = {
+              enable = true;
+              value = 2;
+            };
+          };
+        };
+      };
+    };
+  };
+
+  # ── Boot / bootloader ─────────────────────────────────────────
+  boot.tmp.useTmpfs = true;
+
+  # ── car.service ───────────────────────────────────────────────
+  # Enabled here; package wired in flake.nix once car-software builds
+  services.car = {
+    enable = true;
+    package = pkgs.car-software;
+  };
+
+  environment.systemPackages = with pkgs; [
+    tree
+    htop
+    i2c-tools
+    usbutils
+    pciutils
+    strace
+    # RT debugging
+    rt-tests # cyclictest, hackbench
+    ethtool
+  ];
+
+  # ── Nix settings (allow deploy-rs to push closures) ───────────
+  nix.settings = {
+    trusted-users = ["localhost" "root"];
+    experimental-features = ["nix-command" "flakes"];
+  };
+
+  # ── State version ─────────────────────────────────────────────
+  system.stateVersion = "24.11";
+
+  system.nixos.tags = [
+    "raspberry-pi-5"
+    "preempt-rt"
+    config.boot.kernelPackages.kernel.version
+  ];
+}
+</file>
+
+<file path="modules/car-service.nix">
+{
+  config,
+  pkgs,
+  lib,
+  ...
+}: {
+  options.services.car = {
+    enable = lib.mkEnableOption "autonomous car control service";
+
+    package = lib.mkOption {
+      type = lib.types.package;
+      description = "The car control binary package";
+    };
+
+    logRingBufferSize = lib.mkOption {
+      type = lib.types.str;
+      default = "10M";
+      description = "Size of the in-memory log ring buffer";
+    };
+  };
+
+  config = lib.mkIf config.services.car.enable {
+    security.pam.loginLimits = [
+      {
+        domain = "car";
+        type = "-";
+        item = "memlock";
+        value = "unlimited";
+      }
+      {
+        domain = "car";
+        type = "-";
+        item = "rtprio";
+        value = "99";
+      }
+    ];
+
+    # Dedicated user with GPIO/I2C/SPI/UART access
+    users.users.car = {
+      isSystemUser = true;
+      group = "car";
+      extraGroups = ["gpio" "i2c" "spi" "dialout" "tty"];
+      description = "Car control service user";
+    };
+    users.groups.car = {};
+    # groupes non crée a l'initialisation
+    users.groups.i2c = {};
+    users.groups.gpio = {};
+    users.groups.spi = {};
+
+    systemd.services.car = {
+      description = "Autonomous RC car control loop";
+      documentation = ["https://github.com/sosumappu/nfe"];
+
+      wantedBy = ["multi-user.target"];
+      after = ["network.target" "systemd-udevd.service"];
+      requires = ["systemd-udevd.service"];
+
+      serviceConfig = {
+        ExecStart = "${config.services.car.package}/bin/car";
+
+        User = "car";
+        Group = "car";
+
+        # augmente la priorité du SHCED_FIFO à 50.
+        CPUSchedulingPolicy = "fifo";
+        CPUSchedulingPriority = 50;
+        CPUAffinity = "3"; # pin le coeur
+
+        # ── Memory locking ────────────────────────────────────────
+        # Prevents page faults during the control loop
+        LimitMEMLOCK = "infinity";
+
+        # ── Restart policy ────────────────────────────────────────
+        Restart = "always";
+        RestartSec = "500ms";
+
+        # ── Watchdog integration ──────────────────────────────────
+        # systemd kills the service if it doesn't notify within 5s
+        # The Rust watchdog calls sd_notify("WATCHDOG=1") each tick
+        WatchdogSec = "5s";
+        NotifyAccess = "main";
+
+        # ── Logging ───────────────────────────────────────────────
+        # journald ring buffer — tail with: ssh nfe journalctl -u car -f
+        LogRateLimitIntervalSec = 0;
+        LogRateLimitBurst = 0;
+        SyslogIdentifier = "car";
+
+        # ── Capabilities ──────────────────────────────────────────
+        AmbientCapabilities = ["CAP_SYS_NICE" "CAP_IPC_LOCK"];
+        CapabilityBoundingSet = ["CAP_SYS_NICE" "CAP_IPC_LOCK"];
+
+        # ── Security hardening (compatible with RT) ───────────────
+        NoNewPrivileges = true;
+        ProtectSystem = "strict";
+        ProtectHome = true;
+        PrivateTmp = true;
+        # Allow GPIO/I2C/UART device access
+        DeviceAllow = [
+          "/dev/gpiochip0 rw"
+          "/dev/i2c-1 rw"
+          "/dev/ttyAMA0 rw" # LIDAR UART
+          "/dev/ttyUSB0 rw" # LIDAR USB fallback
+        ];
+        DevicePolicy = "closed";
+      };
+
+      # Environment passed to the control binary
+      environment = {
+        RUST_LOG = "info";
+        CAR_CONTROL_HZ = "100";
+        CAR_WATCHDOG_TICKS = "3";
+      };
+    };
+
+    # udev rules: expose GPIO/I2C to car group without root
+    services.udev.extraRules = ''
+      # GPIO
+      SUBSYSTEM=="gpio", GROUP="gpio", MODE="0660"
+      # I2C (IMU)
+      SUBSYSTEM=="i2c-dev", GROUP="i2c", MODE="0660"
+      # LIDAR UART
+      SUBSYSTEM=="tty", ATTRS{product}=="RPLidar*", GROUP="dialout", MODE="0660", SYMLINK+="lidar"
+      SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", GROUP="dialout", MODE="0660", SYMLINK+="lidar"
+    '';
+  };
+}
+</file>
+
+<file path="modules/preempt-rt.nix">
+# https://lore.kernel.org/linux-rt-users/d445e582-4e49-4135-9d94-f52d72ec5df6@gmx.net/
+#
+{
+  config,
+  pkgs,
+  lib,
+  ...
+}: {
+  nixpkgs.overlays = lib.mkAfter [
+    (final: prev: {
+      linuxPackages_rpi5_rt = let
+        # Extend the rpi5 kernel packages with PREEMPT_RT config
+        rtKernel = prev.linuxPackages_rpi5.kernel.override {
+          structuredExtraConfig = with lib.kernel; {
+            EXPERT = yes;
+            PREEMPT_RT = yes;
+            PREEMPT = lib.mkForce yes;
+            PREEMPT_VOLUNTARY = lib.mkForce no;
+            HZ_1000 = yes; # 1000Hz pour un meilleur control
+            HZ = freeform "1000";
+            HZ_250 = lib.mkForce no;
+            HZ_300 = lib.mkForce no;
+            HZ_500 = lib.mkForce no;
+            HIGH_RES_TIMERS = yes;
+            CPU_ISOLATION = yes;
+            RT_GROUP_SCHED = lib.mkForce no; # enable FIFO
+          };
+          ignoreConfigErrors = true;
+        };
+      in
+        prev.linuxPackagesFor rtKernel;
+    })
+  ];
+
+  boot.kernelPackages = pkgs.linuxPackages_rpi5_rt;
+
+  # Désactiver le real-time throttling
+  # https://docs.kernel.org/scheduler/sched-rt-group.html
+  boot.kernel.sysctl = {
+    "kernel.sched_rt_runtime_us" = -1;
+  };
+
+  # Paramètres kernel
+  boot.kernelParams = [
+    # On isole le coeur n°3
+    "isolcpus=3"
+    "nohz_full=3"
+    "rcu_nocbs=3"
+    # On désactive le balancing sur le 4éme core
+    "irqaffinity=0-2"
+    # On désative le scaling des fréquences pour avoir une latence deterministe
+    "cpufreq.default_governor=performance"
+  ];
+
+  # On désactive forcefully le partage équitable des taches
+  services.irqbalance.enable = lib.mkForce false;
+
+  # On persist le journald
+  services.journald.extraConfig = ''
+    Storage=persistent
+    RateLimitIntervalSec=0
+    RateLimitBurst=0
+    SystemMaxUse=512M
+  '';
+}
+</file>
+
+<file path="packages/car-software/src/bin/diag.rs">
+/// bin/diag.rs — NFE hardware diagnostic tool
+///
+/// Run on the RPi after first boot to verify each sensor before ever starting
+/// the control loop.
+///
+/// Usage:
+///   car-diag imu              continuous IMU readings at 10 Hz
+///   car-diag imu --once       single reading + pass/fail verdict
+///   car-diag lidar            live point cloud stats (rev count, nearest, spread)
+///   car-diag lidar --once     one revolution + point cloud dump
+///   car-diag sonar            all 3 HC-SR04 pinging continuously
+///   car-diag sonar --once     one ping per sensor + pass/fail verdict
+///   car-diag all              run all sensors for 3 s, print summary pass/fail
+///
+/// Exit codes:
+///   0  all checked sensors pass
+///   1  one or more sensors failed or timed out
+
+use std::{
+    f32::consts::PI,
+    io::{self, Write},
+    thread,
+    time::{Duration, Instant},
+};
+
+use rppal::{gpio::Gpio, i2c::I2c, pwm::Pwm};
+use serialport::SerialPort;
+
+// ── Shared constants (mirror the main binary) ──────────────────────────────
+
+const IMU_ADDR:        u16 = 0x68;
+const LIDAR_PORT:      &str = "/dev/lidar";
+const LIDAR_BAUD:      u32 = 115_200;
+const SONAR_TIMEOUT:   Duration = Duration::from_millis(30);
+const SOUND_SPEED:     f32 = 343.0;
+
+// HC-SR04 pin pairs [TRIG, ECHO]
+const SONAR_PINS: [(u8, u8, &str); 3] = [
+    (23, 24, "front"),
+    (25,  8, "front-left"),
+    ( 7,  1, "front-right"),
+];
+
+// ── Entry ──────────────────────────────────────────────────────────────────
+
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    let cmd   = args.get(1).map(String::as_str).unwrap_or("help");
+    let once  = args.iter().any(|a| a == "--once");
+
+    match cmd {
+        "imu"   => run_imu(once),
+        "lidar" => run_lidar(once),
+        "sonar" => run_sonar(once),
+        "all"   => run_all(),
+        _       => {
+            eprintln!("Usage: car-diag <imu|lidar|sonar|all> [--once]");
+            std::process::exit(1);
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  IMU diagnostic
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn run_imu(once: bool) {
+    println!("── IMU diagnostic (I2C-1, addr=0x{:02X}) ──", IMU_ADDR);
+
+    let mut i2c = match I2c::new() {
+        Ok(i) => i,
+        Err(e) => { fail(&format!("cannot open /dev/i2c-1: {e}")); }
+    };
+
+    if let Err(e) = i2c.set_slave_address(IMU_ADDR) {
+        fail(&format!("set_slave_address: {e}"));
+    }
+
+    // Read WHO_AM_I
+    let who = match i2c.smbus_read_byte(0x75) {
+        Ok(v) => v,
+        Err(e) => { fail(&format!("WHO_AM_I read failed: {e}\n→ check wiring, pull-ups, I2C enabled in config.txt")); }
+    };
+    println!("  WHO_AM_I = 0x{who:02X}  (expected 0x68 or 0x70)");
+    if who != 0x68 && who != 0x70 && who != 0x19 {
+        fail(&format!("unexpected WHO_AM_I=0x{who:02X} — wrong device or address"));
+    }
+
+    // Wake device
+    i2c.smbus_write_byte(0x6B, 0x00).expect("PWR_MGMT_1 write");
+    thread::sleep(Duration::from_millis(100));
+    // Accel ±4g, Gyro ±500°/s
+    i2c.smbus_write_byte(0x1C, 0x08).ok();
+    i2c.smbus_write_byte(0x1B, 0x08).ok();
+
+    println!("  Device initialised — reading samples:");
+    println!("  {:>8} {:>8} {:>8}   {:>8} {:>8} {:>8}", "ax", "ay", "az", "gx", "gy", "gz");
+
+    let mut buf = [0u8; 14];
+    let mut count = 0u32;
+
+    loop {
+        i2c.block_read(0x3B, &mut buf).expect("burst read");
+
+        let ax = i16::from_be_bytes([buf[0], buf[1]]) as f32 / 8192.0 * 9.806;
+        let ay = i16::from_be_bytes([buf[2], buf[3]]) as f32 / 8192.0 * 9.806;
+        let az = i16::from_be_bytes([buf[4], buf[5]]) as f32 / 8192.0 * 9.806;
+        let gx = i16::from_be_bytes([buf[8], buf[9]]) as f32 / 65.5 * (PI / 180.0);
+        let gy = i16::from_be_bytes([buf[10],buf[11]]) as f32 / 65.5 * (PI / 180.0);
+        let gz = i16::from_be_bytes([buf[12],buf[13]]) as f32 / 65.5 * (PI / 180.0);
+
+        print!("\r  {:>8.3} {:>8.3} {:>8.3}   {:>8.4} {:>8.4} {:>8.4}  ",
+               ax, ay, az, gx, gy, gz);
+        io::stdout().flush().ok();
+
+        // Sanity checks
+        let gravity_ok = (az.abs() - 9.81).abs() < 2.0;  // az ≈ ±9.81 when flat
+        let noise_ok   = ax.abs() < 5.0 && ay.abs() < 5.0;
+
+        if once {
+            println!();
+            if gravity_ok && noise_ok {
+                pass("IMU");
+            } else if !gravity_ok {
+                fail(&format!("az={az:.2} m/s² — expected ≈ ±9.81 (is the IMU flat? is it powered?)"));
+            } else {
+                fail(&format!("ax={ax:.2} ay={ay:.2} — high lateral noise (loose connection?)"));
+            }
+            return;
+        }
+
+        count += 1;
+        thread::sleep(Duration::from_millis(100));
+
+        if count % 50 == 0 {
+            println!();
+            println!("  [gravity_ok={gravity_ok}  noise_ok={noise_ok}]");
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  LIDAR diagnostic
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn run_lidar(once: bool) {
+    println!("── LIDAR diagnostic ({LIDAR_PORT} @ {LIDAR_BAUD}baud) ──");
+
+    let mut port: Box<dyn SerialPort> = match serialport::new(LIDAR_PORT, LIDAR_BAUD)
+        .timeout(Duration::from_millis(500))
+        .open()
+    {
+        Ok(p) => p,
+        Err(e) => { fail(&format!("cannot open {LIDAR_PORT}: {e}\n→ check USB cable, udev rule, /dev/lidar symlink")); }
+    };
+
+    // Reset + start scan
+    port.write_all(&[0xA5, 0x40]).ok();
+    thread::sleep(Duration::from_millis(100));
+    port.write_all(&[0xA5, 0x20]).ok();
+    port.flush().ok();
+
+    // Drain 7-byte descriptor
+    let mut desc = [0u8; 7];
+    if port.read_exact(&mut desc).is_err() {
+        fail("no response to START_SCAN — is the motor spinning? check 5V supply");
+    }
+    println!("  Response descriptor: {:02x?}", desc);
+
+    let mut buf = [0u8; 5];
+    let mut rev = 0u32;
+    let mut total_points = 0u32;
+    let mut min_dist = f32::MAX;
+    let mut prev_start = false;
+    let mut sectors = [f32::MAX; 8];
+    let start = Instant::now();
+
+    println!("  {:>5} {:>8} {:>8} {:>10} {:>10}", "rev", "points", "min_m", "front_m", "elapsed_s");
+
+    loop {
+        if port.read_exact(&mut buf).is_err() { continue; }
+
+        let start_flag = (buf[0] & 0x01) != 0;
+        let quality    = buf[0] >> 1;
+        let angle_q6   = ((buf[2] as u16) << 7) | ((buf[1] as u16) >> 1);
+        let angle_deg  = angle_q6 as f32 / 64.0;
+        let dist_q2    = (buf[4] as u16) << 8 | buf[3] as u16;
+        let dist_m     = dist_q2 as f32 / 4000.0;
+
+        if start_flag && !prev_start && rev > 0 {
+            println!("  {:>5} {:>8} {:>8.3} {:>10.3} {:>10.1}",
+                     rev, total_points, min_dist, sectors[0], start.elapsed().as_secs_f32());
+            sectors    = [f32::MAX; 8];
+            min_dist   = f32::MAX;
+            total_points = 0;
+
+            if once && rev >= 1 {
+                println!();
+                // Basic sanity: did we get any points and is there a plausible return?
+                if rev > 0 && min_dist < 6.0 {
+                    pass("LIDAR");
+                } else {
+                    fail("LIDAR returned no valid points — check motor power and USB connection");
+                }
+                return;
+            }
+        }
+        if start_flag { rev += 1; }
+        prev_start = start_flag;
+
+        if quality > 0 && dist_m > 0.1 && dist_m < 6.0 {
+            total_points += 1;
+            if dist_m < min_dist { min_dist = dist_m; }
+            let sector = ((angle_deg + 22.5) / 45.0) as usize % 8;
+            if dist_m < sectors[sector] { sectors[sector] = dist_m; }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Sonar diagnostic
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn run_sonar(once: bool) {
+    println!("── Sonar diagnostic (3× HC-SR04) ──");
+
+    let gpio = match Gpio::new() {
+        Ok(g) => g,
+        Err(e) => { fail(&format!("GPIO init failed: {e}")); }
+    };
+
+    // Print header
+    println!("  {:>12} {:>6} {:>6} {:>6}   verdict",
+             "sensor", "trig", "echo", "dist_m");
+
+    let iterations = if once { 1 } else { usize::MAX };
+    let mut all_ok = true;
+
+    for _ in 0..iterations {
+        for &(trig_pin, echo_pin, label) in &SONAR_PINS {
+            let dist = ping_sonar(&gpio, trig_pin, echo_pin);
+            let verdict = match dist {
+                Some(d) if d >= 0.02 && d <= 4.0 => "OK",
+                Some(_) => "OUT_OF_RANGE",
+                None    => { all_ok = false; "TIMEOUT" }
+            };
+            println!("  {:>12} {:>6} {:>6} {:>6}   {}",
+                     label, trig_pin, echo_pin,
+                     dist.map_or("  ---".into(), |d| format!("{d:.3}")),
+                     verdict);
+        }
+
+        if once {
+            println!();
+            if all_ok { pass("all sonars"); } else { fail("one or more sonars timed out"); }
+            return;
+        }
+
+        print!("  ---\r");
+        io::stdout().flush().ok();
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// Returns measured distance in metres, or None on timeout.
+fn ping_sonar(gpio: &Gpio, trig_pin: u8, echo_pin: u8) -> Option<f32> {
+    let mut trig = gpio.get(trig_pin).ok()?.into_output();
+    let echo     = gpio.get(echo_pin).ok()?.into_input();
+
+    // 15 µs trigger pulse
+    trig.set_high();
+    spin_us(15);
+    trig.set_low();
+
+    // Wait for ECHO high
+    let t0 = Instant::now();
+    while echo.is_low() {
+        if t0.elapsed() > SONAR_TIMEOUT { return None; }
+    }
+    let rise = Instant::now();
+
+    // Wait for ECHO low
+    while echo.is_high() {
+        if rise.elapsed() > SONAR_TIMEOUT { return None; }
+    }
+    let fall = Instant::now();
+
+    let echo_s = (fall - rise).as_secs_f32();
+    Some(echo_s * SOUND_SPEED / 2.0)
+}
+
+fn spin_us(us: u64) {
+    let d = Instant::now() + Duration::from_micros(us);
+    while Instant::now() < d { std::hint::spin_loop(); }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  All sensors summary
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn run_all() {
+    println!("══ NFE hardware diagnostic ══");
+    println!("Running all sensors for 3 s each...\n");
+
+    // We run each subtest in --once mode and capture exit via a child process
+    // approach. Simpler: just call each function and catch panics.
+
+    let imu_ok   = std::panic::catch_unwind(|| run_imu(true)).is_ok();
+    println!();
+    let lidar_ok = std::panic::catch_unwind(|| run_lidar(true)).is_ok();
+    println!();
+    let sonar_ok = std::panic::catch_unwind(|| run_sonar(true)).is_ok();
+    println!();
+
+    println!("══ Summary ══");
+    println!("  IMU:   {}", if imu_ok   { "✓ PASS" } else { "✗ FAIL" });
+    println!("  LIDAR: {}", if lidar_ok { "✓ PASS" } else { "✗ FAIL" });
+    println!("  Sonar: {}", if sonar_ok { "✓ PASS" } else { "✗ FAIL" });
+    println!();
+
+    if imu_ok && lidar_ok && sonar_ok {
+        println!("All sensors PASS — safe to start car.service");
+        std::process::exit(0);
+    } else {
+        println!("One or more sensors FAILED — do not start car.service");
+        std::process::exit(1);
+    }
+}
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+
+fn pass(label: &str) {
+    println!("  ✓ PASS  [{label}]");
+    std::process::exit(0);
+}
+
+fn fail(msg: &str) -> ! {
+    println!("  ✗ FAIL  {msg}");
+    std::process::exit(1);
+}
+</file>
+
+<file path="packages/car-software/src/control/actuate.rs">
+/// Peremt le controle de l'ESC et du servo
+///
+/// TODO: dtoverlay=pwm-2chan,pin=18,func=2,pin2=19,func2=2
+
+use rppal::gpio::Gpio;
+use rppal::pwm::{Channel, Polarity, Pwm};
+use tracing::warn;
+
+
+const PWM_FREQ_HZ:    f64 = 50.0;
+const PWM_PERIOD_US:  f64 = 1_000_000.0 / PWM_FREQ_HZ;   // 20_000 µs
+
+const PULSE_MIN_US:     f64 = 1000.0; // unit en microseconds
+const PULSE_NEUTRAL_US: f64 = 1500.0;
+const PULSE_MAX_US:     f64 = 2000.0;
+const PULSE_RANGE_US:   f64 = 500.0;   // neutral ± this = full deflection
+
+/// Angle maximal du servo (±0.5 rad ≈ ±28.6°)
+pub const SERVO_MAX_RAD: f32 = 0.5;
+
+/// Fraction maximal du throttle (1.0 = full forward)
+pub const THROTTLE_MAX: f32 = 1.0;
+
+
+pub struct Actuate {
+    esc:   Pwm,
+    servo: Pwm,
+}
+
+impl Actuate {
+    pub fn new(_gpio: &Gpio) -> anyhow::Result<Self> {
+        let period = std::time::Duration::from_micros(PWM_PERIOD_US as u64);
+        let neutral = std::time::Duration::from_micros(PULSE_NEUTRAL_US as u64);
+
+        let esc = Pwm::with_period(Channel::Pwm0, period, neutral, Polarity::Normal, true)?;
+        let servo = Pwm::with_period(Channel::Pwm1, period, neutral, Polarity::Normal, true)?;
+
+        Ok(Self { esc, servo })
+    }
+
+    /// `throttle`: -1.0 (full brake/reverse) … +1.0 (full forward)
+    pub fn set_pwm_esc(&mut self, throttle: f32) {
+        let t = throttle.clamp(-THROTTLE_MAX, THROTTLE_MAX) as f64;
+        let pulse_us = PULSE_NEUTRAL_US + t * PULSE_RANGE_US;
+        Self::write_pwm(&self.esc, pulse_us);
+    }
+
+    /// `angle_rad`: -SERVO_MAX_RAD (full right) … +SERVO_MAX_RAD (full left)
+    pub fn set_pwm_servo(&mut self, angle_rad: f32) {
+        let a = angle_rad.clamp(-SERVO_MAX_RAD, SERVO_MAX_RAD) as f64;
+        let pulse_us = PULSE_NEUTRAL_US + (a / SERVO_MAX_RAD as f64) * PULSE_RANGE_US;
+        Self::write_pwm(&self.servo, pulse_us);
+    }
+
+    /// Passert en neutral et roues de face lors d'un shutdown ou du watchdog miss
+    pub fn safe_state(&mut self) {
+        Self::write_pwm(&self.esc,   PULSE_NEUTRAL_US);
+        Self::write_pwm(&self.servo, PULSE_NEUTRAL_US);
+        warn!("actuate: safe_state — ESC neutral, servo centre");
+    }
+
+    fn write_pwm(pwm: &Pwm, pulse_us: f64) {
+        let pulse = std::time::Duration::from_nanos((pulse_us * 1000.0) as u64);
+        if let Err(e) = pwm.set_pulse_width(pulse) {
+            warn!("actuate: PWM write error: {e}");
+        }
+    }
+}
+
+impl Drop for Actuate {
+    fn drop(&mut self) {
+        // Passer en neutral sur un drop (sorti du processus / panic)
+        Self::write_pwm(&self.esc,   PULSE_NEUTRAL_US);
+        Self::write_pwm(&self.servo, PULSE_NEUTRAL_US);
+    }
+}
+</file>
+
+<file path="packages/car-software/src/control/lqr.rs">
+/// control/lqr.rs — LQR lateral (steering) controller
+///
+/// Computes a steering angle from a 4-element state vector:
+///   state = [lateral_error_m, lateral_rate_m_s, heading_error_rad, yaw_rate_rad_s]
+///
+/// The gain matrix K is computed offline (MATLAB/Python LQR solve on your
+/// linearised bicycle model) and hardcoded here as constants.
+/// Tune Q (state cost) and R (input cost) to trade tracking vs. aggressiveness.
+///
+/// Once a wheel encoder is fitted, replace the stub state vector in main.rs
+/// with real lateral error from your path planner.
+
+/// Gain vector K = [k_lat_err, k_lat_rate, k_heading_err, k_yaw_rate]
+/// Placeholder values — MUST be replaced after system identification.
+const K: [f32; 4] = [0.80, 0.30, 1.20, 0.40];
+
+/// TODO: importer la constante SERVO_MAX_RAD(main.rs) via le constructeur
+const STEER_MAX_RAD: f32 = 0.5;
+
+pub struct Lqr {
+    k: [f32; 4],
+}
+
+impl Lqr {
+    pub fn new() -> Self {
+        Self { k: K }
+    }
+
+    /// Renvoies l'angle de virage en rad
+    /// Positif = left, negatif = right
+    pub fn compute_lateral(&self, state: [f32; 4]) -> f32 {
+        let u: f32 = self.k.iter().zip(state.iter()).map(|(k, x)| k * x).sum();
+        u.clamp(-STEER_MAX_RAD, STEER_MAX_RAD)
+    }
+
+    /// Pour tuner en realtime avec un UDP)
+    pub fn set_gains(&mut self, k: [f32; 4]) {
+        self.k = k;
+    }
+}
+</file>
+
+<file path="packages/car-software/src/control/mod.rs">
+pub mod actuate;
+pub mod lqr;
+pub mod pid;
+pub mod watchdog;
+
+pub use actuate::Actuate;
+pub use lqr::Lqr;
+pub use pid::Pid;
+pub use watchdog::{Watchdog, WATCHDOG_MAX_MISSED};
+</file>
+
+<file path="packages/car-software/src/control/pid.rs">
+/// control/pid.rs — PID longitudinal (speed / throttle) controller
+///
+/// Computes a throttle command [-1, +1] from speed error.
+/// Anti-windup: integral is clamped and reset on sign change.
+
+// TODO: pass CONTROL_HZ as dt in  the PID constructor to avoid duplication
+const CONTROL_HZ: f32 = 100.0;
+
+pub struct Pid {
+    pub kp: f32,
+    pub ki: f32,
+    pub kd: f32,
+    integral:   f32,
+    prev_error: f32,
+    dt:         f32,
+    windup_limit: f32, // clamping pour l'intégral
+}
+
+impl Pid {
+    pub fn new(kp: f32, ki: f32, kd: f32) -> Self {
+        Self {
+            kp, ki, kd,
+            integral:     0.0,
+            prev_error:   0.0,
+            dt:           1.0 / CONTROL_HZ,
+            windup_limit: 0.5,
+        }
+    }
+
+    /// return [-1.0, +1.0].
+    pub fn compute_longitudinal(&mut self, error: f32) -> f32 {
+        // Anti-windup: reset integral on sign change
+        if error.signum() != self.prev_error.signum() {
+            self.integral = 0.0;
+        }
+        self.integral = (self.integral + error * self.dt).clamp(
+            -self.windup_limit, self.windup_limit
+        );
+        let derivative = (error - self.prev_error) / self.dt;
+        self.prev_error = error;
+
+        (self.kp * error + self.ki * self.integral + self.kd * derivative)
+            .clamp(-1.0, 1.0)
+    }
+
+    pub fn reset(&mut self) {
+        self.integral   = 0.0;
+        self.prev_error = 0.0;
+    }
+}
+</file>
+
+<file path="packages/car-software/src/control/watchdog.rs">
+/// control/watchdog.rs — software watchdog for the control loop
+///
+/// The control loop calls `kick()` every tick.
+/// If the loop overruns (tick took longer than CONTROL_PERIOD), it calls `miss()`.
+/// After WATCHDOG_MAX_MISSED consecutive misses, the caller engages safe_state.
+///
+/// Additionally, `kick()` calls sd_notify(WATCHDOG=1) so systemd's WatchdogSec=5s
+/// timer is reset.  If the process hangs entirely, systemd will restart it.
+
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
+use libsystemd::daemon::{self, NotifyState};
+
+pub const WATCHDOG_MAX_MISSED: u32 = 3;
+
+pub struct Watchdog {
+    missed: Arc<AtomicU32>,
+}
+
+impl Watchdog {
+    pub fn new() -> Self {
+        Self { missed: Arc::new(AtomicU32::new(0)) }
+    }
+
+    /// Appeler a chaque tick reussi
+    pub fn kick(&self) {
+        self.missed.store(0, Ordering::Relaxed);
+        let _ = daemon::notify(false, &[NotifyState::Watchdog]);
+    }
+
+    /// Appeler lors d'un un miss
+    pub fn miss(&self) -> u32 {
+        self.missed.fetch_add(1, Ordering::Relaxed) + 1
+    }
+}
+</file>
+
+<file path="packages/car-software/src/sensors/imu.rs">
+/// sensors/imu.rs — IMU reader thread (I2C, MPU-6050 / MPU-6500 compatible)
+///
+/// Spawns a dedicated OS thread that:
+///   1. Opens /dev/i2c-1 via rppal::i2c
+///   2. Initialises the IMU (wake from sleep, set FSR, DLPF)
+///   3. Reads accel + gyro registers in a tight loop at ~1 kHz
+///   4. Converts raw counts to SI units (m/s², rad/s)
+///   5. Writes the result into SharedState via update_imu()
+///
+/// The thread runs faster than the 100 Hz control loop on purpose — the
+/// control loop always reads the *latest* sample, not a queued one.
+/// On RPi5 a blocking I2C read of 14 bytes at 400 kHz takes ~350 µs.
+
+use std::{
+    sync::Arc,
+    thread,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
+
+use rppal::i2c::I2c;
+use tracing::{error, info, warn};
+
+use crate::init::ReadySignal;
+use crate::state::{ImuSample, SharedState};
+
+// ── MPU-6050 register map (also valid for MPU-6500) ────────────────────────
+
+const IMU_ADDR:       u16 = 0x68; // AD0 low; use 0x69 if AD0 pulled high
+const REG_PWR_MGMT_1: u8 = 0x6B;
+const REG_CONFIG:     u8 = 0x1A;
+const REG_GYRO_CFG:   u8 = 0x1B;
+const REG_ACCEL_CFG:  u8 = 0x1C;
+const REG_ACCEL_XOUT: u8 = 0x3B; // first of 14 consecutive bytes
+const REG_WHO_AM_I:   u8 = 0x75;
+
+// Full-scale ranges we configure:
+//   Accel ±4g  → sensitivity 8192 LSB/g
+//   Gyro  ±500°/s → sensitivity 65.5 LSB/(°/s)
+const ACCEL_SENSITIVITY: f32 = 8192.0;      // LSB per g
+const GYRO_SENSITIVITY:  f32 = 65.5;        // LSB per °/s
+const G_TO_MS2:          f32 = 9.80665;
+const DEG_TO_RAD:        f32 = std::f32::consts::PI / 180.0;
+
+// Read loop target: 500 Hz (2 ms sleep) — fast enough that the control loop
+// always has a fresh sample without burning a full CPU core.
+const LOOP_SLEEP: Duration = Duration::from_millis(2);
+
+// ── Thread entry point ──────────────────────────────────────────────────────
+
+pub fn spawn(state: Arc<SharedState>, ready: ReadySignal) -> thread::JoinHandle<()> {
+    thread::Builder::new()
+        .name("imu-reader".into())
+        .stack_size(128 * 1024)
+        .spawn(move || run(state, ready))
+        .expect("failed to spawn imu-reader thread")
+}
+
+fn run(state: Arc<SharedState>, ready: ReadySignal) {
+    info!("imu: starting on /dev/i2c-1 addr=0x{:02X}", IMU_ADDR);
+
+    let mut ready = Some(ready); // consumed on first valid sample
+
+    loop {
+        if state.is_shutdown() { break; }
+
+        // Warn : might return Ok() for other reason than state.is_shutdown
+        match open_and_read(&state, &mut ready) {
+            Ok(()) => break,
+            Err(e) => {
+                error!("imu: error — {e} — retrying in 1s");
+                state.sensor_fault.store(true, std::sync::atomic::Ordering::Relaxed);
+                thread::sleep(Duration::from_secs(1));
+                state.sensor_fault.store(false, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+    }
+
+    info!("imu: thread exiting");
+}
+
+fn open_and_read(
+    state: &Arc<SharedState>,
+    ready: &mut Option<ReadySignal>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut i2c = I2c::new()?;
+    i2c.set_slave_address(IMU_ADDR)?;
+
+    // Verify device identity
+    let who = i2c.smbus_read_byte(REG_WHO_AM_I)?;
+    if who != 0x68 && who != 0x70 && who != 0x19 {
+        return Err(format!("imu: unexpected WHO_AM_I=0x{who:02X}").into());
+    }
+    info!("imu: WHO_AM_I=0x{who:02X} — device confirmed");
+
+    // Wake up (clear SLEEP bit), use internal oscillator
+    i2c.smbus_write_byte(REG_PWR_MGMT_1, 0x00)?;
+    thread::sleep(Duration::from_millis(100));
+
+    // DLPF bandwidth 44 Hz (CONFIG register = 3) — balances noise vs latency
+    i2c.smbus_write_byte(REG_CONFIG, 0x03)?;
+
+    // Gyro FSR ±500 °/s (FS_SEL = 1)
+    i2c.smbus_write_byte(REG_GYRO_CFG, 0x08)?;
+
+    // Accel FSR ±4g (AFS_SEL = 1)
+    i2c.smbus_write_byte(REG_ACCEL_CFG, 0x08)?;
+
+    info!("imu: initialised — accel ±4g, gyro ±500°/s, DLPF 44Hz");
+
+    let mut buf = [0u8; 14]; // ACCEL_X..ACCEL_Z, TEMP, GYRO_X..GYRO_Z (all 16-bit BE)
+
+    loop {
+        if state.is_shutdown() { break; }
+
+        // Burst-read 14 bytes starting at ACCEL_XOUT_H
+        i2c.block_read(REG_ACCEL_XOUT, &mut buf)?;
+
+        let ax_raw = i16::from_be_bytes([buf[0],  buf[1]]);
+        let ay_raw = i16::from_be_bytes([buf[2],  buf[3]]);
+        let az_raw = i16::from_be_bytes([buf[4],  buf[5]]);
+        // buf[6..7] = temperature, skip
+        let gx_raw = i16::from_be_bytes([buf[8],  buf[9]]);
+        let gy_raw = i16::from_be_bytes([buf[10], buf[11]]);
+        let gz_raw = i16::from_be_bytes([buf[12], buf[13]]);
+
+        let ts_us = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_micros() as u64;
+
+        state.update_imu(ImuSample {
+            ax: (ax_raw as f32 / ACCEL_SENSITIVITY) * G_TO_MS2,
+            ay: (ay_raw as f32 / ACCEL_SENSITIVITY) * G_TO_MS2,
+            az: (az_raw as f32 / ACCEL_SENSITIVITY) * G_TO_MS2,
+            gx: (gx_raw as f32 / GYRO_SENSITIVITY)  * DEG_TO_RAD,
+            gy: (gy_raw as f32 / GYRO_SENSITIVITY)  * DEG_TO_RAD,
+            gz: (gz_raw as f32 / GYRO_SENSITIVITY)  * DEG_TO_RAD,
+            timestamp_us: ts_us,
+        });
+
+        // Signal readiness on first successful sample (Option::take is a no-op after that)
+        if let Some(r) = ready.take() { r.signal(); }
+
+        thread::sleep(LOOP_SLEEP);
+    }
+
+    Ok(())
+}
+</file>
+
+<file path="packages/car-software/src/sensors/lidar.rs">
+/// sensors/lidar.rs — RPLiDAR A1 reader thread
+///
+/// Produces a 180° frontal point cloud with configurable angular resolution:
+///   FRONT_ARC_DEG wide at DTHETA_FRONT_DEG resolution   (fine)
+///   remaining arcs at DTHETA_SIDES_DEG / DTHETA_REAR_DEG (coarse)
+///
+/// The LIDAR_ROTATION_OFFSET_DEG constant compensates for physical mounting:
+/// set it to the angle (degrees, clockwise) that the LIDAR motor/cable exit
+/// faces relative to the car's true forward direction.
+/// Example: cable exits toward the rear → offset = 180.0
+///          cable exits toward the right → offset = 90.0
+/// You can also flip it at runtime by changing the constant and redeploying.
+///
+/// Point cloud layout
+/// ------------------
+/// The published `LidarCloud` contains up to MAX_POINTS (x, y) pairs in the
+/// car's local frame:  +x = forward, +y = left.
+/// Points outside the 180° front arc (±90°) are discarded.
+/// Within the arc, raw A1 samples are bucketed by their adjusted angle;
+/// only the nearest return per bucket survives (min-distance filter).
+///
+/// Threading model
+/// ---------------
+/// Dedicated OS thread (blocking serial IO).  On each full revolution the
+/// latest cloud is written into SharedState.  The control loop reads a
+/// snapshot once per 10 ms tick with zero copying overhead beyond the
+/// point array itself.
+
+use std::{
+    io::{self, Read, Write},
+    sync::Arc,
+    thread,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
+
+use tracing::{debug, error, info, warn};
+
+use crate::init::ReadySignal;
+use crate::state::{LidarCloud, LidarPoint, SharedState};
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  TUNE THESE CONSTANTS FOR YOUR PHYSICAL SETUP
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Clockwise angle offset (degrees) from the LIDAR's 0° reference to the
+/// car's true forward direction.
+/// Adjust until obstacles detected at the front read near 0°.
+pub const LIDAR_ROTATION_OFFSET_DEG: f32 = 0.0;
+
+/// Half-width of the "front" arc (centred on 0°) that gets fine resolution.
+/// 45.0 → front arc spans -45°..+45°
+pub const FRONT_HALF_ARC_DEG: f32 = 45.0;
+
+/// Angular bucket size (degrees) inside the front arc.
+/// Smaller = more points = more processing.  A1 resolution is ~1°.
+pub const DTHETA_FRONT_DEG: f32 = 1.0;
+
+/// Bucket size for the side arcs (|angle| between FRONT_HALF_ARC and 90°).
+pub const DTHETA_SIDES_DEG: f32 = 5.0;
+
+/// Bucket size for the rear arc (|angle| > 90°).
+/// Rear samples are kept for obstacle avoidance but at coarse resolution.
+pub const DTHETA_REAR_DEG: f32 = 10.0;
+
+/// Minimum valid distance (metres).  Below this = LIDAR crosstalk / noise.
+pub const DIST_MIN_M: f32 = 0.10;
+
+/// Maximum valid distance (metres).  A1 range is ~6 m indoors.
+pub const DIST_MAX_M: f32 = 6.0;
+
+/// Maximum number of points in one published cloud.
+/// ceil(90/1) + ceil(90/5)*2 + ceil(180/10) = 90 + 36 + 18 = 144  → 256 is safe.
+pub const MAX_POINTS: usize = 256;
+
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ── RPLiDAR A1 protocol constants ──────────────────────────────────────────
+
+const BAUD_RATE: u32 = 115_200;
+const CMD_START_SCAN: [u8; 2] = [0xA5, 0x20];
+const CMD_STOP: [u8; 2]       = [0xA5, 0x25];
+const CMD_RESET: [u8; 2]      = [0xA5, 0x40];
+const RESPONSE_DESCRIPTOR_LEN: usize = 7;
+const SAMPLE_LEN: usize = 5;
+
+// Minimum time for one full revolution at 5.5 Hz (A1 nominal)
+const MIN_REV_DURATION: Duration = Duration::from_millis(50);
+
+// ── Bucket table built once at startup ────────────────────────────────────
+
+/// Pre-computed mapping: adjusted_angle_deg (0..360) → Option<bucket_index>
+/// None means the angle is not sampled (outside 180° front arc — disabled
+/// for now; set ENABLE_REAR to true to include rear samples too).
+///
+/// We include the full 360° so rear data is available for obstacle avoidance,
+/// but rear buckets are coarse (DTHETA_REAR_DEG).
+struct BucketTable {
+    /// angle_to_bucket[angle_deg_floor] = bucket index, or usize::MAX if skipped
+    angle_to_bucket: Vec<usize>,
+    /// Total number of buckets
+    count: usize,
+    /// Centre angle of each bucket (degrees, in car frame, -180..180)
+    centres: Vec<f32>,
+}
+
+impl BucketTable {
+    fn build() -> Self {
+        // We walk 0..360 in 1° steps and assign each degree to a bucket.
+        // Angle in car frame = adjusted - 180, so 0° A1 → depends on offset.
+        // We label buckets by their car-frame centre angle (-180..+180).
+
+        let mut angle_to_bucket = vec![usize::MAX; 360];
+        let mut centres: Vec<f32> = Vec::with_capacity(MAX_POINTS);
+
+        // Generate bucket centres in car-frame (-180..+180)
+        // Front arc: -FRONT_HALF_ARC .. +FRONT_HALF_ARC at DTHETA_FRONT
+        // Side arcs: FRONT_HALF_ARC .. 90  and  -90 .. -FRONT_HALF_ARC at DTHETA_SIDES
+        // Rear arc:  90 .. 180  and  -180 .. -90  at DTHETA_REAR
+
+        let mut angle = -180.0f32;
+        while angle < 180.0 {
+            let dt = dtheta_for(angle);
+            let centre = angle + dt / 2.0;
+            centres.push(centre);
+            angle += dt;
+        }
+
+        let count = centres.len();
+
+        // For each integer degree 0..360, find closest bucket centre
+        for raw_deg in 0usize..360 {
+            // Apply mounting offset and convert to car frame (-180..+180)
+            let adjusted = ((raw_deg as f32 - LIDAR_ROTATION_OFFSET_DEG).rem_euclid(360.0));
+            let car_frame = if adjusted > 180.0 { adjusted - 360.0 } else { adjusted };
+
+            // Find bucket whose centre is nearest to car_frame
+            if let Some((idx, _)) = centres
+                .iter()
+                .enumerate()
+                .min_by(|(_, a), (_, b)| {
+                    let da = (car_frame - *a).abs();
+                    let db = (car_frame - *b).abs();
+                    da.partial_cmp(&db).unwrap()
+                })
+            {
+                angle_to_bucket[raw_deg] = idx;
+            }
+        }
+
+        Self { angle_to_bucket, count, centres }
+    }
+}
+
+fn dtheta_for(car_frame_angle: f32) -> f32 {
+    let abs = car_frame_angle.abs();
+    if abs <= FRONT_HALF_ARC_DEG {
+        DTHETA_FRONT_DEG
+    } else if abs <= 90.0 {
+        DTHETA_SIDES_DEG
+    } else {
+        DTHETA_REAR_DEG
+    }
+}
+
+// ── Thread entry point ──────────────────────────────────────────────────────
+
+pub fn spawn(state: Arc<SharedState>, ready: ReadySignal, port_path: String) -> thread::JoinHandle<()> {
+    thread::Builder::new()
+        .name("lidar-reader".into())
+        .stack_size(512 * 1024)
+        .spawn(move || run(state, ready, port_path))
+        .expect("failed to spawn lidar-reader thread")
+}
+
+fn run(state: Arc<SharedState>, ready: ReadySignal, port_path: String) {
+    info!(
+        "lidar: starting on {}  offset={:.1}°  front±{:.0}° dθ={:.0}°  sides dθ={:.0}°  rear dθ={:.0}°",
+        port_path, LIDAR_ROTATION_OFFSET_DEG,
+        FRONT_HALF_ARC_DEG, DTHETA_FRONT_DEG, DTHETA_SIDES_DEG, DTHETA_REAR_DEG,
+    );
+
+    let table = BucketTable::build();
+    info!("lidar: bucket table built — {} buckets", table.count);
+
+    let mut ready = Some(ready); // consumed after first published cloud
+
+    loop {
+        if state.is_shutdown() { break; }
+
+        match open_and_scan(&state, &port_path, &table, &mut ready) {
+            Ok(()) => break,
+            Err(e) => {
+                error!("lidar: {e} — retrying in 2s");
+                state.sensor_fault.store(true, std::sync::atomic::Ordering::Relaxed);
+                thread::sleep(Duration::from_secs(2));
+                state.sensor_fault.store(false, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+    }
+
+    info!("lidar: thread exiting");
+}
+
+fn open_and_scan(
+    state: &Arc<SharedState>,
+    port_path: &str,
+    table: &BucketTable,
+    ready: &mut Option<ReadySignal>,
+) -> io::Result<()> {
+    let mut port = serialport::new(port_path, BAUD_RATE)
+        .timeout(Duration::from_millis(500))
+        .open()
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+    // Reset then start
+    port.write_all(&CMD_RESET)?;
+    thread::sleep(Duration::from_millis(100));
+    port.write_all(&CMD_START_SCAN)?;
+    port.flush()?;
+
+    // Drain response descriptor (7 bytes)
+    let mut desc = [0u8; RESPONSE_DESCRIPTOR_LEN];
+    port.read_exact(&mut desc)?;
+    debug!("lidar: descriptor {:02x?}", desc);
+
+    // Per-revolution accumulator: min distance per bucket
+    let mut buckets: Vec<f32> = vec![f32::MAX; table.count];
+    let mut prev_start = false;
+    let mut rev_start = std::time::Instant::now();
+    let mut buf = [0u8; SAMPLE_LEN];
+
+    loop {
+        if state.is_shutdown() {
+            port.write_all(&CMD_STOP).ok();
+            break;
+        }
+
+        port.read_exact(&mut buf)?;
+
+        // ── Parse 5-byte A1 response packet ─────────────────────
+        // Byte 0 bit0 = new-scan flag, bits 1-7 = quality
+        // Byte 1-2: angle Q6 little-endian (degrees × 64)
+        // Byte 3-4: distance Q2 little-endian (mm × 4)
+        let start_flag = (buf[0] & 0x01) != 0;
+        let quality    = buf[0] >> 1;
+
+        let angle_q6   = ((buf[2] as u16) << 7) | ((buf[1] as u16) >> 1);
+        let angle_deg  = angle_q6 as f32 / 64.0;          // 0.0 .. 360.0
+
+        let dist_q2    = (buf[4] as u16) << 8 | buf[3] as u16;
+        let dist_m     = dist_q2 as f32 / 4000.0;          // Q2 mm → metres
+
+        // New revolution: publish cloud, reset accumulators
+        if start_flag && !prev_start {
+            if rev_start.elapsed() >= MIN_REV_DURATION {
+                publish_cloud(state, table, &buckets, ready);
+                buckets.iter_mut().for_each(|b| *b = f32::MAX);
+                rev_start = std::time::Instant::now();
+            }
+        }
+        prev_start = start_flag;
+
+        // Reject bad returns
+        if quality == 0 || dist_m < DIST_MIN_M || dist_m > DIST_MAX_M {
+            continue;
+        }
+
+        // Look up bucket for this raw angle
+        let raw_idx = angle_deg as usize % 360;
+        let bucket  = table.angle_to_bucket[raw_idx];
+        if bucket == usize::MAX { continue; }
+
+        // Keep nearest return (min-distance filter)
+        if dist_m < buckets[bucket] {
+            buckets[bucket] = dist_m;
+        }
+    }
+
+    Ok(())
+}
+
+/// Convert the per-revolution bucket array into a `LidarCloud` and push it
+/// into shared state.  Only populated buckets (dist < MAX) become points.
+fn publish_cloud(
+    state:  &Arc<SharedState>,
+    table:  &BucketTable,
+    buckets: &[f32],
+    ready:  &mut Option<ReadySignal>,
+) {
+    let mut points: Vec<LidarPoint> = Vec::with_capacity(table.count);
+
+    for (i, &dist_m) in buckets.iter().enumerate() {
+        if dist_m >= DIST_MAX_M { continue; }          // no return in bucket
+
+        let angle_deg = table.centres[i];              // car frame, -180..+180
+        let angle_rad = angle_deg.to_radians();
+
+        // Car-local frame: +x = forward (+cos), +y = left (-sin because CW positive)
+        let x =  dist_m * angle_rad.cos();
+        let y = -dist_m * angle_rad.sin();
+
+        points.push(LidarPoint { x, y, dist_m, angle_deg });
+    }
+
+    let ts_us = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_micros() as u64;
+
+    debug!(
+        "lidar: cloud {} pts  front={:.2}m",
+        points.len(),
+        buckets[0].min(buckets[1]) // front two buckets as proxy
+    );
+
+    state.update_lidar(LidarCloud { points, timestamp_us: ts_us });
+
+    // Signal readiness on first complete revolution
+    if let Some(r) = ready.take() { r.signal(); }
+}
+</file>
+
+<file path="packages/car-software/src/sensors/mod.rs">
+pub mod imu;
+pub mod lidar;
+pub mod sonar;
+</file>
+
+<file path="packages/car-software/src/sensors/sonar.rs">
+/// sensors/sonar.rs — 3× HC-SR04 ultrasonic rangefinders
+///
+/// Physical wiring (BCM pin numbers):
+///   Sensor 0 (front)       TRIG=23  ECHO=24
+///   Sensor 1 (front-left)  TRIG=25  ECHO=8
+///   Sensor 2 (front-right) TRIG=7   ECHO=1
+///
+/// Linux / rppal constraint
+/// ─────────────────────────
+/// We cannot receive hardware IRQs in userspace.  Instead we use rppal's
+/// `set_async_interrupt` which backs the ECHO pin with a kernel poll
+/// (epoll on /sys/class/gpio) and calls our closure on each edge transition.
+/// Latency introduced by this path is typically 20-100 µs on RPi5 — adequate
+/// for HC-SR04 whose measurement itself has ±1 cm (~58 µs/cm).
+///
+/// Measurement sequence per sensor (runs in a dedicated OS thread)
+/// ───────────────────────────────────────────────────────────────
+///   1. Pull TRIG high for 10 µs  (trigger pulse)
+///   2. Wait for ECHO rising edge  → record t_rise
+///   3. Wait for ECHO falling edge → record t_fall
+///   4. dist_m = (t_fall - t_rise).as_secs_f32() * SOUND_SPEED_M_S / 2.0
+///   5. Clamp to [DIST_MIN_M, DIST_MAX_M]; out-of-range = no obstacle detected
+///   6. Write result into SharedState
+///   7. Sleep MEASURE_INTERVAL before next trigger
+///
+/// We stagger the trigger timing across the 3 sensors to prevent crosstalk
+/// (sensor 0 triggers at t=0, sensor 1 at t+33ms, sensor 2 at t+66ms).
+///
+/// Safety
+/// ──────
+/// Each sensor thread is independent; a stuck ECHO (no return) times out
+/// after ECHO_TIMEOUT and records f32::MAX (no obstacle) with a warning.
+
+use std::{
+    sync::{
+        atomic::{AtomicU32, Ordering},
+        Arc,
+    },
+    thread,
+    time::{Duration, Instant},
+};
+
+use rppal::gpio::{Gpio, InputPin, Level, OutputPin, Trigger};
+use tracing::{debug, error, info, warn};
+
+use crate::init::ReadySignal;
+use crate::state::SharedState;
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  TUNE THESE CONSTANTS FOR YOUR SETUP
+// ═══════════════════════════════════════════════════════════════════════════
+
+pub const SOUND_SPEED_M_S: f32 = 343.0;   // m/s at ~20°C; adjust for ambient temp
+
+/// HC-SR04 trigger pulse width (spec: ≥10 µs)
+pub const TRIG_PULSE_US: u64 = 15;
+
+/// How long to wait for the ECHO rising edge before declaring a timeout.
+pub const ECHO_TIMEOUT: Duration = Duration::from_millis(30);
+
+/// Measurement cycle period per sensor.  At 30 ms you get ~33 Hz per sensor.
+pub const MEASURE_INTERVAL: Duration = Duration::from_millis(30);
+
+/// Valid distance range.  HC-SR04 spec: 2 cm – 4 m.
+pub const DIST_MIN_M: f32 = 0.02;
+pub const DIST_MAX_M: f32 = 4.0;
+
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Sensor descriptor — pin numbers and which SharedState slot to write.
+#[derive(Clone, Copy)]
+pub struct SonarConfig {
+    pub label:    &'static str,
+    pub trig_bcm: u8,
+    pub echo_bcm: u8,
+    /// Index into SharedState::sonar_slots (0, 1, 2)
+    pub slot:     usize,
+    /// Stagger delay before first trigger so sensors don't interfere
+    pub startup_delay: Duration,
+}
+
+/// Default wiring: 23/24, 25/8, 7/1
+pub const SONAR_SENSORS: [SonarConfig; 3] = [
+    SonarConfig {
+        label: "front",       trig_bcm: 23, echo_bcm: 24, slot: 0,
+        startup_delay: Duration::from_millis(0),
+    },
+    SonarConfig {
+        label: "front-left",  trig_bcm: 25, echo_bcm: 8,  slot: 1,
+        startup_delay: Duration::from_millis(10),
+    },
+    SonarConfig {
+        label: "front-right", trig_bcm: 7,  echo_bcm: 1,  slot: 2,
+        startup_delay: Duration::from_millis(20),
+    },
+];
+
+// ── Thread entry point ──────────────────────────────────────────────────────
+
+/// Spawn one OS thread per sensor.  Returns all three handles.
+pub fn spawn_all(
+    state: Arc<SharedState>,
+    gpio: &Gpio,
+    ready_signals: Vec<ReadySignal>,
+) -> Vec<thread::JoinHandle<()>> {
+    SONAR_SENSORS
+        .iter()
+        .zip(ready_signals.into_iter())
+        .map(|(cfg, ready)| {
+            let state  = state.clone();
+            let cfg    = *cfg;
+            let trig   = gpio.get(cfg.trig_bcm)
+                .unwrap_or_else(|e| panic!("sonar {}: TRIG pin {}: {e}", cfg.label, cfg.trig_bcm))
+                .into_output();
+            let echo   = gpio.get(cfg.echo_bcm)
+                .unwrap_or_else(|e| panic!("sonar {}: ECHO pin {}: {e}", cfg.label, cfg.echo_bcm))
+                .into_input();
+
+            thread::Builder::new()
+                .name(format!("sonar-{}", cfg.label))
+                .stack_size(128 * 1024)
+                .spawn(move || run(state, cfg, trig, echo, ready))
+                .expect("failed to spawn sonar thread")
+        })
+        .collect()
+}
+
+fn run(
+    state: Arc<SharedState>,
+    cfg: SonarConfig,
+    mut trig: OutputPin,
+    mut echo: InputPin,
+    ready: ReadySignal,
+) {
+    info!(
+        "sonar[{}]: TRIG=BCM{} ECHO=BCM{} slot={}",
+        cfg.label, cfg.trig_bcm, cfg.echo_bcm, cfg.slot
+    );
+
+    if !cfg.startup_delay.is_zero() {
+        thread::sleep(cfg.startup_delay);
+    }
+
+    let rise_us: Arc<AtomicU32> = Arc::new(AtomicU32::new(0));
+    let fall_us: Arc<AtomicU32> = Arc::new(AtomicU32::new(0));
+    let rise_us2 = rise_us.clone();
+    let fall_us2 = fall_us.clone();
+
+    let t0   = Instant::now();
+    let t0_2 = t0;
+
+    echo.set_async_interrupt(Trigger::Both, move |level| {
+        let elapsed_us = t0_2.elapsed().as_micros() as u32;
+        match level {
+            Level::High => rise_us2.store(elapsed_us, Ordering::Release),
+            Level::Low  => fall_us2.store(elapsed_us, Ordering::Release),
+        }
+    })
+    .expect("sonar: failed to set async interrupt");
+
+    let mut ready = Some(ready); // consumed on first valid reading
+
+    loop {
+        if state.is_shutdown() { break; }
+
+        let dist_m = measure(&mut trig, &rise_us, &fall_us, &t0, &cfg);
+        state.update_sonar(cfg.slot, dist_m);
+
+        // Signal readiness on first ping that returned (valid or out-of-range —
+        // both mean the hardware is alive; timeout means it's not)
+        if ready.is_some() && dist_m < f32::MAX {
+            if let Some(r) = ready.take() { r.signal(); }
+        }
+
+        debug!("sonar[{}]: {:.3} m", cfg.label,
+               if dist_m >= DIST_MAX_M { f32::INFINITY } else { dist_m });
+
+        thread::sleep(MEASURE_INTERVAL);
+    }
+
+    echo.clear_async_interrupt().ok();
+    info!("sonar[{}]: thread exiting", cfg.label);
+}
+
+/// Fire one trigger pulse and wait for the ECHO edges.
+/// Returns distance in metres, or DIST_MAX_M on timeout/invalid.
+fn measure(
+    trig:    &mut OutputPin,
+    rise_us: &Arc<AtomicU32>,
+    fall_us: &Arc<AtomicU32>,
+    t0:      &Instant,
+    cfg:     &SonarConfig,
+) -> f32 {
+    // Snapshot current edge timestamps so we can detect new edges
+    let prev_rise = rise_us.load(Ordering::Relaxed);
+    let prev_fall = fall_us.load(Ordering::Relaxed);
+
+    // ── 1. Trigger pulse ─────────────────────────────────────────
+    trig.set_high();
+    spin_sleep_us(TRIG_PULSE_US);
+    trig.set_low();
+
+    let trigger_us = t0.elapsed().as_micros() as u32;
+
+    // ── 2. Wait for ECHO rising edge ─────────────────────────────
+    let deadline = Instant::now() + ECHO_TIMEOUT;
+    let rise = loop {
+        let r = rise_us.load(Ordering::Acquire);
+        if r != prev_rise && r >= trigger_us {
+            break r;
+        }
+        if Instant::now() >= deadline {
+            warn!("sonar[{}]: ECHO rising edge timeout", cfg.label);
+            return DIST_MAX_M;
+        }
+        thread::yield_now();
+    };
+
+    // ── 3. Wait for ECHO falling edge ────────────────────────────
+    let deadline = Instant::now() + ECHO_TIMEOUT;
+    let fall = loop {
+        let f = fall_us.load(Ordering::Acquire);
+        if f != prev_fall && f > rise {
+            break f;
+        }
+        if Instant::now() >= deadline {
+            warn!("sonar[{}]: ECHO falling edge timeout", cfg.label);
+            return DIST_MAX_M;
+        }
+        thread::yield_now();
+    };
+
+    // ── 4. Distance ───────────────────────────────────────────────
+    let echo_us = (fall - rise) as f32;
+    let dist_m  = echo_us * 1e-6 * SOUND_SPEED_M_S / 2.0;
+
+    if dist_m < DIST_MIN_M || dist_m > DIST_MAX_M {
+        return DIST_MAX_M; // out of range — no credible obstacle
+    }
+
+    dist_m
+}
+
+/// Busy-wait for a precise short delay (< 1 ms).
+/// `thread::sleep` has OS scheduler granularity (~1 ms) — too coarse for
+/// the 10-15 µs trigger pulse.
+#[inline]
+fn spin_sleep_us(us: u64) {
+    let deadline = Instant::now() + Duration::from_micros(us);
+    while Instant::now() < deadline {
+        std::hint::spin_loop();
+    }
+}
+</file>
+
+<file path="packages/car-software/src/init.rs">
+/// init.rs — Sensor readiness barrier
+///
+/// Each sensor thread calls `ReadinessBarrier::signal(sensor)` the first time
+/// it successfully produces a valid reading.  The control loop calls
+/// `wait_all_ready(timeout)` before its first tick.
+///
+/// On timeout the barrier logs exactly which sensors failed to respond and
+/// returns `Err(InitError)`.  `main` then notifies systemd STOPPING and exits,
+/// letting `Restart=always` handle the retry.
+///
+/// This guarantees the control loop never starts with stale Default values:
+///   - ImuSample::default() → gz=0 feeds LQR a false "no yaw"
+///   - LidarCloud::default() → empty cloud, obstacle_closer_than() blind
+///   - sonar f32::MAX → "no obstacle" (safe, but still unverified)
+
+use std::{fmt, time::Duration};
+use tokio::sync::watch;
+use tracing::{error, info, warn};
+
+// ── Sensor identity ────────────────────────────────────────────────────────
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Sensor {
+    Lidar,
+    Imu,
+    Sonar(usize), // 0=front 1=front-left 2=front-right
+}
+
+impl fmt::Display for Sensor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Sensor::Lidar    => write!(f, "LIDAR"),
+            Sensor::Imu      => write!(f, "IMU"),
+            Sensor::Sonar(n) => write!(f, "Sonar[{n}]"),
+        }
+    }
+}
+
+// All sensors that must be ready before the control loop may start
+const REQUIRED: &[Sensor] = &[
+    Sensor::Lidar,
+    Sensor::Imu,
+    Sensor::Sonar(0),
+    Sensor::Sonar(1),
+    Sensor::Sonar(2),
+];
+
+// ── ReadinessBarrier ───────────────────────────────────────────────────────
+
+/// One sender per sensor; the barrier watches all of them.
+#[derive(Clone)]
+pub struct ReadinessBarrier {
+    senders: Vec<(Sensor, watch::Sender<bool>)>,
+}
+
+/// Handle given to each sensor thread — call `.signal()` once on first valid reading.
+pub struct ReadySignal {
+    sensor: Sensor,
+    tx:     watch::Sender<bool>,
+}
+
+impl ReadySignal {
+    /// Mark this sensor as ready.  Idempotent — safe to call multiple times.
+    pub fn signal(&self) {
+        let _ = self.tx.send(true);
+        info!("init: {} ready", self.sensor);
+    }
+}
+
+#[derive(Debug)]
+pub struct InitError {
+    pub failed: Vec<Sensor>,
+}
+
+impl fmt::Display for InitError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let names: Vec<_> = self.failed.iter().map(|s| s.to_string()).collect();
+        write!(f, "sensors not ready within timeout: {}", names.join(", "))
+    }
+}
+
+impl std::error::Error for InitError {}
+
+impl ReadinessBarrier {
+    /// Create barrier + one `ReadySignal` per required sensor.
+    pub fn new() -> (Self, Vec<ReadySignal>) {
+        let mut senders = Vec::new();
+        let mut signals = Vec::new();
+
+        for &sensor in REQUIRED {
+            let (tx, _rx) = watch::channel(false);
+            signals.push(ReadySignal { sensor, tx: tx.clone() });
+            senders.push((sensor, tx));
+        }
+
+        (ReadinessBarrier { senders }, signals)
+    }
+
+    /// Block until every sensor has signalled ready, or `timeout` expires.
+    /// Returns `Err(InitError)` listing every sensor that didn't respond.
+    pub async fn wait_all_ready(&self, timeout: Duration) -> Result<(), InitError> {
+        info!("init: waiting for {} sensors (timeout={timeout:?})", REQUIRED.len());
+
+        let deadline = tokio::time::Instant::now() + timeout;
+        let mut failed = Vec::new();
+
+        for (sensor, tx) in &self.senders {
+            let mut rx = tx.subscribe();
+
+            // Already ready (signalled before we started waiting)?
+            if *rx.borrow() {
+                info!("init: {} already ready", sensor);
+                continue;
+            }
+
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            match tokio::time::timeout(remaining, rx.changed()).await {
+                Ok(Ok(())) if *rx.borrow() => {
+                    info!("init: {} ready", sensor);
+                }
+                _ => {
+                    error!("init: {} did NOT become ready in time", sensor);
+                    failed.push(*sensor);
+                }
+            }
+        }
+
+        if failed.is_empty() {
+            info!("init: all sensors ready — starting control loop");
+            Ok(())
+        } else {
+            Err(InitError { failed })
+        }
+    }
+}
+</file>
+
+<file path="packages/car-software/src/main.rs">
+/// main.rs — NFE autonomous RC car entry point
+
+mod control;
+mod init;
+mod sensors;
+mod state;
+
+use std::sync::Arc;
+
+use libsystemd::daemon::{self, NotifyState};
+use rppal::gpio::Gpio;
+use tokio::{
+    runtime::Builder,
+    signal::unix::{signal, SignalKind},
+    time::{interval, MissedTickBehavior},
+};
+use tracing::{error, info, warn};
+
+use control::{Actuate, Lqr, Pid, Watchdog, WATCHDOG_MAX_MISSED};
+use init::ReadinessBarrier;
+use state::SharedState;
+
+// ── Config ───────────────────────────────────────────────────────────────────
+
+const CONTROL_HZ: u64 = 100;
+const CONTROL_PERIOD: std::time::Duration =
+    std::time::Duration::from_millis(1000 / CONTROL_HZ);
+
+const LIDAR_PORT: &str = "/dev/lidar";
+
+/// How long to wait for all sensors to produce their first valid reading.
+const INIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+// ── mlockall ─────────────────────────────────────────────────────────────────
+
+fn lock_memory() {
+    unsafe {
+        extern "C" { fn mlockall(flags: libc::c_int) -> libc::c_int; }
+        if mlockall(3) != 0 {
+            eprintln!("mlockall failed — check LimitMEMLOCK=infinity in unit file");
+        } else {
+            info!("memory: all pages locked (MCL_CURRENT | MCL_FUTURE)");
+        }
+    }
+}
+
+// ── Entry point ───────────────────────────────────────────────────────────────
+
+fn main() -> anyhow::Result<()> {
+    init_tracing()?;
+    info!("car: NFE autonomous RC car starting");
+    lock_memory();
+
+    let state = SharedState::new();
+    let gpio  = Gpio::new()?;
+
+    // ── Build readiness barrier ───────────────────────────────────
+    // Signals ordered to match REQUIRED in init.rs:
+    //   [Lidar, Imu, Sonar(0), Sonar(1), Sonar(2)]
+    let (barrier, mut signals) = ReadinessBarrier::new();
+    let sig_lidar  = signals.remove(0);
+    let sig_imu    = signals.remove(0);
+    let sig_sonars = signals; // remaining 3
+
+    // ── Spawn sensor threads ──────────────────────────────────────
+    sensors::lidar::spawn(state.clone(), sig_lidar,  LIDAR_PORT.to_string());
+    sensors::imu::spawn(state.clone(),   sig_imu);
+    sensors::sonar::spawn_all(state.clone(), &gpio,  sig_sonars);
+
+    info!("car: sensor threads spawned — waiting for readiness (timeout={INIT_TIMEOUT:?})");
+
+    // ── Tokio runtime (current_thread — stays on isolated core 3) ─
+    let rt = Builder::new_current_thread()
+        .enable_time()
+        .build()?;
+
+    let actuate = Actuate::new(&gpio)?;
+
+    rt.block_on(async move {
+        // ── Init barrier — abort hard if any sensor doesn't respond ─
+        if let Err(e) = barrier.wait_all_ready(INIT_TIMEOUT).await {
+            error!("car: INIT FAILED — {e}");
+            // Tell systemd we are stopping cleanly so it logs the right reason.
+            // Restart=always will retry after RestartSec.
+            let _ = daemon::notify(false, &[NotifyState::Other("STATUS=init failed".into())]);
+            std::process::exit(1);
+        }
+
+        // All sensors confirmed ready
+        let _ = daemon::notify(false, &[NotifyState::Ready]);
+        info!("car: all sensors ready — starting control loop");
+
+        control_loop(state, actuate).await
+    })
+}
+
+// ── Control loop ──────────────────────────────────────────────────────────────
+
+async fn control_loop(state: Arc<SharedState>, mut actuate: Actuate) -> anyhow::Result<()> {
+    let     lqr      = Lqr::new();
+    let mut pid      = Pid::new(1.5, 0.05, 0.2);
+    let     watchdog = Watchdog::new();
+
+    // Graceful shutdown on SIGTERM / SIGINT
+    {
+        let state2 = state.clone();
+        tokio::spawn(async move {
+            let mut sigterm = signal(SignalKind::terminate()).unwrap();
+            let mut sigint  = signal(SignalKind::interrupt()).unwrap();
+            tokio::select! {
+                _ = sigterm.recv() => {},
+                _ = sigint.recv()  => {},
+            }
+            warn!("car: shutdown signal received");
+            state2.shutdown.store(true, std::sync::atomic::Ordering::Relaxed);
+        });
+    }
+
+    let mut ticker = interval(CONTROL_PERIOD);
+    ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
+    let mut tick: u64 = 0;
+    let start = std::time::Instant::now();
+
+    loop {
+        ticker.tick().await;
+        let t0 = std::time::Instant::now();
+
+        if state.is_shutdown() {
+            actuate.safe_state();
+            info!(
+                "car: clean shutdown after {tick} ticks ({:.1}s)",
+                start.elapsed().as_secs_f32()
+            );
+            break;
+        }
+
+        let snap = state.snapshot(); // snapshot l'état à l'instant t
+
+        // régle d'arret si un point est trop prét
+        // WARN: peut ne pas avoir le behaviour attendu
+        if snap.obstacle_closer_than(0.30) {
+            actuate.safe_state();
+            watchdog.kick();
+            warn!(
+                "car: ESTOP  lidar_front={:.2}m  sonar={:.2}/{:.2}/{:.2}m",
+                snap.lidar.nearest_in_arc(0.0, 30.0).map_or(f32::MAX, |p| p.dist_m),
+                snap.sonar_m[0], snap.sonar_m[1], snap.sonar_m[2],
+            );
+            continue;
+        }
+
+        // valeur non finale
+        // TODO: implémenté l'algo de willen
+        let lateral_state = [
+            0.0,          // lateral error  (stub — replace with path planner)
+            snap.imu.ay,  // lateral accel as proxy for rate
+            0.0,          // heading error  (stub)
+            snap.imu.gz,  // yaw rate
+        ];
+        let steering_rad = lqr.compute_lateral(lateral_state);
+
+        let throttle = pid.compute_longitudinal(1.0 - 0.0);
+
+        actuate.set_pwm_servo(steering_rad); // envoyé le pwn au servo
+        actuate.set_pwm_esc(throttle); // pwm ESC
+
+        // Watchdog -- paralyse le véhicule si on miss 3 lecture
+        let loop_us = t0.elapsed().as_micros();
+        if loop_us > CONTROL_PERIOD.as_micros() {
+            if watchdog.miss() >= WATCHDOG_MAX_MISSED {
+                error!("car: watchdog — {WATCHDOG_MAX_MISSED} overruns — safe state");
+                actuate.safe_state();
+            } else {
+                watchdog.kick();
+            }
+        }
+
+        // ── Logging (every 10 ticks = 100 ms) ────────────────────
+        tick += 1;
+        if tick % 10 == 0 {
+            tracing::info!(
+                tick,
+                loop_us,
+                uptime_s      = start.elapsed().as_secs(),
+                steering      = format!("{:.3}", steering_rad),
+                throttle      = format!("{:.3}", throttle),
+                lidar_pts     = snap.lidar.points.len(),
+                lidar_front_m = snap.lidar.nearest_in_arc(0.0, 30.0)
+                                    .map_or(-1.0, |p| p.dist_m),
+                sonar         = format!(
+                                    "{:.2}/{:.2}/{:.2}",
+                                    snap.sonar_m[0], snap.sonar_m[1], snap.sonar_m[2]
+                                ),
+                gz_rad_s      = format!("{:.3}", snap.imu.gz),
+                "tick"
+            );
+        }
+    }
+
+    Ok(())
+}
+
+// ── Tracing ───────────────────────────────────────────────────────────────────
+
+fn init_tracing() -> anyhow::Result<()> {
+    use tracing_subscriber::prelude::*;
+
+    let fmt = tracing_subscriber::fmt::layer()
+        .with_filter(
+            tracing_subscriber::EnvFilter::from_env("RUST_LOG")
+                .add_directive("car=info".parse().unwrap()),
+        );
+
+    if std::env::var("JOURNAL_STREAM").is_ok() {
+        // Running under systemd — also write structured fields to journald
+        let jd = tracing_journald::layer()?;
+        tracing::subscriber::set_global_default(
+            tracing_subscriber::registry().with(fmt).with(jd),
+        )?;
+    } else {
+        // Local terminal / SSH session
+        tracing::subscriber::set_global_default(
+            tracing_subscriber::registry().with(fmt),
+        )?;
+    }
+
+    Ok(())
+}
+</file>
+
+<file path="packages/car-software/src/state.rs">
+/// state.rs — Shared sensor state between gatherer threads and the control loop.
+///
+/// Gatherer threads hold an `Arc<SharedState>` and call `update_*`.
+/// The control loop calls `snapshot()` once per 10 ms tick to get a
+/// consistent, allocation-minimised copy of all sensor data.
+///
+/// Synchronisation strategy
+/// ─────────────────────────
+///   LidarCloud   — parking_lot::RwLock  (variable-length Vec of points)
+///   ImuSample    — parking_lot::RwLock  (14-byte struct, written at 500 Hz)
+///   sonar[3]     — AtomicU32 per slot   (f32 bits; lock-free, written at ~33 Hz each)
+///   flags        — AtomicBool           (sensor_fault, shutdown)
+///
+/// parking_lot::RwLock is chosen over std because:
+///   - Does not poison on panic (safe in RT context)
+///   - Fair queueing (no writer starvation under high read load)
+///   - ~5 ns lock/unlock on aarch64 with no contention
+
+use std::sync::{
+    atomic::{AtomicBool, AtomicU32, Ordering},
+    Arc,
+};
+
+use parking_lot::RwLock;
+
+// ── LIDAR point cloud ──────────────────────────────────────────────────────
+
+/// One point in the car's local frame.
+///   +x = forward, +y = left
+///   angle_deg: car-frame angle, -180..+180 (negative = right)
+#[derive(Clone, Copy, Debug)]
+pub struct LidarPoint {
+    pub x:         f32,   // metres
+    pub y:         f32,   // metres
+    pub dist_m:    f32,   // range (redundant but convenient for filtering)
+    pub angle_deg: f32,   // car-frame degrees
+}
+
+/// Warn: clone() duplique la structure de point complet a voir arc-swap ou fixed size array pour
+/// éviter les allocations
+#[derive(Clone, Debug, Default)]
+pub struct LidarCloud {
+    pub points:       Vec<LidarPoint>,
+    pub timestamp_us: u64,
+}
+
+impl LidarCloud {
+    /// Nearest point within |angle_deg| <= half_arc_deg.
+    /// Returns None if the arc has no valid returns.
+    pub fn nearest_in_arc(&self, centre_deg: f32, half_arc_deg: f32) -> Option<&LidarPoint> {
+        self.points.iter().filter(|p| {
+            (p.angle_deg - centre_deg).abs() <= half_arc_deg
+        }).min_by(|a, b| a.dist_m.partial_cmp(&b.dist_m).unwrap())
+    }
+
+    /// Nearest obstacle anywhere in the cloud.
+    pub fn nearest(&self) -> Option<&LidarPoint> {
+        self.points.iter().min_by(|a, b| a.dist_m.partial_cmp(&b.dist_m).unwrap())
+    }
+}
+
+// ── IMU sample ─────────────────────────────────────────────────────────────
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ImuSample {
+    pub ax: f32, pub ay: f32, pub az: f32,   // m/s²
+    pub gx: f32, pub gy: f32, pub gz: f32,   // rad/s
+    pub timestamp_us: u64,
+}
+
+// ── Snapshot (what the control loop works with) ────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct SensorSnapshot {
+    pub lidar:        LidarCloud,
+    pub imu:          ImuSample,
+    /// distances in metres for [front, front-left, front-right]
+    /// f32::MAX = no obstacle / out of range
+    pub sonar_m:      [f32; 3],
+    pub sensor_fault: bool,
+}
+
+impl SensorSnapshot {
+    /// Nearest sonar reading across all three sensors.
+    pub fn sonar_min(&self) -> f32 {
+        self.sonar_m.iter().cloned().fold(f32::MAX, f32::min)
+    }
+
+    /// True if any sensor (sonar or LIDAR front arc) detects an obstacle
+    /// closer than `threshold_m`.
+    pub fn obstacle_closer_than(&self, threshold_m: f32) -> bool {
+        if self.sonar_min() < threshold_m { return true; }
+        self.lidar
+            .nearest_in_arc(0.0, 30.0)   // ±30° front cone
+            .map_or(false, |p| p.dist_m < threshold_m)
+    }
+}
+
+// ── SharedState ────────────────────────────────────────────────────────────
+
+pub struct SharedState {
+    lidar:        RwLock<LidarCloud>,
+    imu:          RwLock<ImuSample>,
+    /// f32::to_bits() stored atomically; index = SonarConfig::slot
+    sonar_bits:   [AtomicU32; 3],
+    pub sensor_fault: AtomicBool,
+    pub shutdown:     AtomicBool,
+}
+
+impl SharedState {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self {
+            lidar:        RwLock::new(LidarCloud::default()),
+            imu:          RwLock::new(ImuSample::default()),
+            sonar_bits:   [
+                AtomicU32::new(f32::MAX.to_bits()),
+                AtomicU32::new(f32::MAX.to_bits()),
+                AtomicU32::new(f32::MAX.to_bits()),
+            ],
+            sensor_fault: AtomicBool::new(false),
+            shutdown:     AtomicBool::new(false),
+        })
+    }
+
+    // ── Writer API ──────────────────────────────────────────────
+
+    pub fn update_lidar(&self, cloud: LidarCloud) {
+        *self.lidar.write() = cloud;
+    }
+
+    pub fn update_imu(&self, sample: ImuSample) {
+        *self.imu.write() = sample;
+    }
+
+    /// `slot` must be 0, 1, or 2 — matches `SonarConfig::slot`.
+    pub fn update_sonar(&self, slot: usize, dist_m: f32) {
+        self.sonar_bits[slot].store(dist_m.to_bits(), Ordering::Relaxed);
+    }
+
+    // ── Reader API (control loop) ────────────────────────────────
+
+    pub fn snapshot(&self) -> SensorSnapshot {
+        SensorSnapshot {
+            lidar: self.lidar.read().clone(),
+            imu:   *self.imu.read(),
+            sonar_m: [
+                f32::from_bits(self.sonar_bits[0].load(Ordering::Relaxed)),
+                f32::from_bits(self.sonar_bits[1].load(Ordering::Relaxed)),
+                f32::from_bits(self.sonar_bits[2].load(Ordering::Relaxed)),
+            ],
+            sensor_fault: self.sensor_fault.load(Ordering::Relaxed),
+        }
+    }
+
+    pub fn is_shutdown(&self) -> bool {
+        self.shutdown.load(Ordering::Relaxed)
+    }
+}
+</file>
+
+<file path="packages/car-software/Cargo.toml">
+[package]
+name = "car"
+version = "0.1.0"
+edition = "2021"
+description = "NFE — CARTEN M210 autonomous car control loop (PREEMPT_RT / Tokio)"
+
+# ── Binaries ──────────────────────────────────────────────────────────────
+
+[[bin]]
+name = "car"
+path = "src/main.rs"
+
+[[bin]]
+name = "car-diag"
+path = "src/bin/diag.rs"
+
+# ── Dependencies ──────────────────────────────────────────────────────────
+
+[dependencies]
+# Async runtime — current_thread, stays on core 3 (CPUAffinity)
+tokio = { version = "1", features = ["rt", "time", "sync", "macros", "signal"] }
+
+# Structured logging → journald when running under systemd
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-journald = "0.3"
+
+# GPIO, I2C, hardware PWM — Linux/RPi only
+rppal = "0.18"
+
+# Serial port for LIDAR UART
+serialport = "4"
+
+# Fast non-poisoning RwLock for sensor state shared between threads
+parking_lot = "0.12"
+
+# systemd sd_notify + watchdog
+libsystemd = "0.7"
+
+# mlockall
+libc = "0.2"
+
+# Error handling
+anyhow = "1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+
+[profile.dev]
+# Faster iteration on the Pi during development
+opt-level = 1
+</file>
+
+<file path="packages/car-software/default.nix">
+{
+  lib,
+  stdenv,
+  rustPlatform,
+  pkg-config,
+  systemd, # libsystemd (sd_notify, watchdog)
+  libudev-zero, # udev shim — lighter than full systemd for cross builds
+}:
+rustPlatform.buildRustPackage {
+  pname = "car-software";
+  version = "0.1.0";
+
+  # Source is the package directory itself
+  src = ./.;
+
+  # Cargo.lock must exist at the source root
+  cargoLock.lockFile = ./Cargo.lock;
+
+  # Build both binaries defined in Cargo.toml:
+  #   [[bin]] name = "car"      → $out/bin/car
+  #   [[bin]] name = "car-diag" → $out/bin/car-diag
+  cargoBuildFlags = ["--bins"];
+
+  # pkg-config resolves libsystemd headers during build
+  nativeBuildInputs = [pkg-config];
+
+  # Runtime link dependencies
+  buildInputs = [systemd];
+
+  # ── Release profile ────────────────────────────────────────────
+  # Matches [profile.release] in Cargo.toml:
+  #   opt-level = 3, lto = "thin", codegen-units = 1, panic = "abort"
+  # buildRustPackage always passes --release, so no extra flag needed.
+
+  # ── Post-install ───────────────────────────────────────────────
+  # Strip debug info to keep the closure small on the Pi's SD card.
+  # The release profile already sets panic=abort; stripping is safe.
+  postInstall = ''
+    ${lib.optionalString (stdenv.hostPlatform != stdenv.buildPlatform) ''
+      # Cross-strip: use the target strip, not the build-host one
+      $STRIP $out/bin/car
+      $STRIP $out/bin/car-diag
+    ''}
+  '';
+
+  meta = {
+    description = "NFE autonomous RC car control loop (PREEMPT_RT / Tokio)";
+    homepage = "https://github.com/sosumappu/nfe";
+    license = lib.licenses.mit;
+    platforms = ["aarch64-linux"];
+    mainProgram = "car";
+  };
+}
+</file>
+
+<file path=".gitignore">
+**/target/
+</file>
+
+<file path="flake.lock">
+{
+  "nodes": {
+    "argononed": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1729566243,
+        "narHash": "sha256-DPNI0Dpk5aym3Baf5UbEe5GENDrSmmXVdriRSWE+rgk=",
+        "owner": "nvmd",
+        "repo": "argononed",
+        "rev": "16dbee54d49b66d5654d228d1061246b440ef7cf",
+        "type": "github"
+      },
+      "original": {
+        "owner": "nvmd",
+        "repo": "argononed",
+        "type": "github"
+      }
+    },
+    "deploy-rs": {
+      "inputs": {
+        "flake-compat": "flake-compat",
+        "nixpkgs": [
+          "nixpkgs"
+        ],
+        "utils": "utils"
+      },
+      "locked": {
+        "lastModified": 1770019181,
+        "narHash": "sha256-hwsYgDnby50JNVpTRYlF3UR/Rrpt01OrxVuryF40CFY=",
+        "owner": "serokell",
+        "repo": "deploy-rs",
+        "rev": "77c906c0ba56aabdbc72041bf9111b565cdd6171",
+        "type": "github"
+      },
+      "original": {
+        "owner": "serokell",
+        "repo": "deploy-rs",
+        "type": "github"
+      }
+    },
+    "fenix": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ],
+        "rust-analyzer-src": "rust-analyzer-src"
+      },
+      "locked": {
+        "lastModified": 1780824777,
+        "narHash": "sha256-/D3gjEDezsoa//Kbd+rNQRERl4AS+HYOMChsdD1eus4=",
+        "owner": "nix-community",
+        "repo": "fenix",
+        "rev": "3a556b6fbd42412b6f3f0ea8d35959b1826f86ff",
+        "type": "github"
+      },
+      "original": {
+        "owner": "nix-community",
+        "repo": "fenix",
+        "type": "github"
+      }
+    },
+    "flake-compat": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1733328505,
+        "narHash": "sha256-NeCCThCEP3eCl2l/+27kNNK7QrwZB1IJCrXfrbv5oqU=",
+        "owner": "edolstra",
+        "repo": "flake-compat",
+        "rev": "ff81ac966bb2cae68946d5ed5fc4994f96d0ffec",
+        "type": "github"
+      },
+      "original": {
+        "owner": "edolstra",
+        "repo": "flake-compat",
+        "type": "github"
+      }
+    },
+    "flake-compat_2": {
+      "locked": {
+        "lastModified": 1767039857,
+        "narHash": "sha256-vNpUSpF5Nuw8xvDLj2KCwwksIbjua2LZCqhV1LNRDns=",
+        "owner": "edolstra",
+        "repo": "flake-compat",
+        "rev": "5edf11c44bc78a0d334f6334cdaf7d60d732daab",
+        "type": "github"
+      },
+      "original": {
+        "owner": "edolstra",
+        "repo": "flake-compat",
+        "type": "github"
+      }
+    },
+    "nixos-images": {
+      "inputs": {
+        "nixos-stable": [
+          "nixos-raspberrypi",
+          "nixpkgs"
+        ],
+        "nixos-unstable": [
+          "nixos-raspberrypi",
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1747747741,
+        "narHash": "sha256-LUOH27unNWbGTvZFitHonraNx0JF/55h30r9WxqrznM=",
+        "owner": "nvmd",
+        "repo": "nixos-images",
+        "rev": "cbbd6db325775096680b65e2a32fb6187c09bbb4",
+        "type": "github"
+      },
+      "original": {
+        "owner": "nvmd",
+        "ref": "sdimage-installer",
+        "repo": "nixos-images",
+        "type": "github"
+      }
+    },
+    "nixos-raspberrypi": {
+      "inputs": {
+        "argononed": "argononed",
+        "flake-compat": "flake-compat_2",
+        "nixos-images": "nixos-images",
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1779023229,
+        "narHash": "sha256-MInilg7B/06c34SwOuGSBho4l0H1EZcmvxTkSWCs5pE=",
+        "owner": "nvmd",
+        "repo": "nixos-raspberrypi",
+        "rev": "06c6e3513e1ee64b651913193fc6ac38aa4963f5",
+        "type": "github"
+      },
+      "original": {
+        "owner": "nvmd",
+        "ref": "main",
+        "repo": "nixos-raspberrypi",
+        "type": "github"
+      }
+    },
+    "nixpkgs": {
+      "locked": {
+        "lastModified": 1780749050,
+        "narHash": "sha256-3av0pIjlOWQ6rDbNOmpUSvbNnJkGORQKKjb4LtCZsIY=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "a799d3e3886da994fa307f817a6bc705ae538eeb",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "ref": "nixos-unstable",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "root": {
+      "inputs": {
+        "deploy-rs": "deploy-rs",
+        "fenix": "fenix",
+        "nixos-raspberrypi": "nixos-raspberrypi",
+        "nixpkgs": "nixpkgs"
+      }
+    },
+    "rust-analyzer-src": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1780758424,
+        "narHash": "sha256-OcXGwiq5ibERT8S9rx5V1bgleguAfwzSQzMePpf8yIE=",
+        "owner": "rust-lang",
+        "repo": "rust-analyzer",
+        "rev": "a9a66c4077fedd375c0f1e61dc39a8f3243ce0ef",
+        "type": "github"
+      },
+      "original": {
+        "owner": "rust-lang",
+        "ref": "nightly",
+        "repo": "rust-analyzer",
+        "type": "github"
+      }
+    },
+    "systems": {
+      "locked": {
+        "lastModified": 1681028828,
+        "narHash": "sha256-Vy1rq5AaRuLzOxct8nz4T6wlgyUR7zLU309k9mBC768=",
+        "owner": "nix-systems",
+        "repo": "default",
+        "rev": "da67096a3b9bf56a91d16901293e51ba5b49a27e",
+        "type": "github"
+      },
+      "original": {
+        "owner": "nix-systems",
+        "repo": "default",
+        "type": "github"
+      }
+    },
+    "utils": {
+      "inputs": {
+        "systems": "systems"
+      },
+      "locked": {
+        "lastModified": 1731533236,
+        "narHash": "sha256-l0KFg5HjrsfsO/JpG+r7fRrqm12kzFHyUHqHCVpMMbI=",
+        "owner": "numtide",
+        "repo": "flake-utils",
+        "rev": "11707dc2f618dd54ca8739b309ec4fc024de578b",
+        "type": "github"
+      },
+      "original": {
+        "owner": "numtide",
+        "repo": "flake-utils",
+        "type": "github"
+      }
+    }
+  },
+  "root": "root",
+  "version": 7
+}
+</file>
+
+<file path="flake.nix">
+{
+  description = ''NeverFastEnough'';
+
+  nixConfig = {
+    bash-prompt = "\\[nfe\\] ➜ ";
+    extra-substituters = [
+      "https://nixos-raspberrypi.cachix.org"
+      "https://nix-community.cachix.org"
+    ];
+    extra-trusted-public-keys = [
+      "nixos-raspberrypi.cachix.org-1:4iMO9LXa8BqhU+Rpg6LQKiGa2lsNh/j2oiYLNOQ5sPI="
+      "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCUSeBc="
+    ];
+    connect-timeout = 5;
+  };
+
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+
+    nixos-raspberrypi = {
+      url = "github:nvmd/nixos-raspberrypi/main";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+
+    deploy-rs = {
+      url = "github:serokell/deploy-rs";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+
+    fenix = {
+      url = "github:nix-community/fenix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+  };
+
+  outputs = {
+    self,
+    nixpkgs,
+    nixos-raspberrypi,
+    deploy-rs,
+    fenix,
+    ...
+  } @ inputs: let
+    allSystems = nixpkgs.lib.systems.flakeExposed;
+    forSystems = f: nixpkgs.lib.genAttrs allSystems f;
+    targetSystem = "aarch64-linux";
+
+    pkgsFor = system:
+      import nixpkgs {
+        inherit system;
+        overlays = [fenix.overlays.default self.overlays.default];
+      };
+  in {
+    # ── Overlay: car-software + RT Rust toolchain ─────────────────
+    overlays.default = final: prev: {
+      rustToolchain = fenix.packages.${prev.stdenv.hostPlatform.system}.stable.toolchain;
+
+      car-software = prev.callPackage ./packages/car-software {
+        inherit (prev) systemd libudev-zero;
+        rustPlatform = prev.makeRustPlatform {
+          cargo = final.rustToolchain;
+          rustc = final.rustToolchain;
+        };
+      };
+    };
+
+    #
+    packages = forSystems (system: {
+      inherit (pkgsFor system) car-software;
+      default = (pkgsFor system).car-software;
+    });
+
+    # ── NixOS configuration: nfe ──────────────────────────────────
+    nixosConfigurations.nfe = nixos-raspberrypi.lib.nixosSystemFull {
+      specialArgs = inputs;
+      modules = [
+        ./hosts/nfe/configuration.nix
+        {
+          nixpkgs.overlays = [self.overlays.default];
+          nixpkgs.crossSystem = nixpkgs.lib.systems.elaborate targetSystem;
+        }
+      ];
+    };
+
+    # deploy .#nfe                       — deploy latest
+    # deploy .#nfe -- --rollback         — roll back one generation
+    # deploy .#nfe -- --dry-activate     — dry run
+    #
+    deploy.nodes.nfe = {
+      hostname = "nfe.local";
+      sshUser = "localhost";
+      sshOpts = ["-o" "StrictHostKeyChecking=accept-new"];
+      magicRollback = true;
+      autoRollback = true;
+      confirmTimeout = 60;
+
+      profiles.system = {
+        user = "root";
+        path =
+          deploy-rs.lib.${targetSystem}.activate.nixos
+          self.nixosConfigurations.nfe;
+      };
+    };
+
+    # deploy-rs schema checks
+    checks = forSystems (
+      system:
+        deploy-rs.lib.${system}.deployChecks self.deploy
+    );
+
+    # ── Dev shell ──────────────────────────────────────────────────
+    devShells = forSystems (system: let
+      pkgs = pkgsFor system;
+    in {
+      default = pkgs.mkShell {
+        name = "nfe-car-dev";
+
+        nativeBuildInputs = with pkgs;
+          [
+            nil
+            nixpkgs-fmt
+            nix-output-monitor
+            deploy-rs.packages.${system}.default
+            fenix.packages.${system}.stable.toolchain
+            pkg-config
+          ]
+          ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
+            rt-tests
+          ];
+
+        shellHook = ''
+          echo ""
+          echo "  NeverFastEnough dev shell"
+          echo "  ─────────────────────────────────────────────────────"
+          echo "  nom build .#packages.aarch64-linux.car-software   build binary"
+          echo "  deploy .#nfe                                      deploy to Pi"
+          echo "  deploy .#nfe -- --rollback                        roll back"
+          echo "  ssh localhost@nfe.local                           shell on Pi"
+          echo "  ssh localhost@nfe.local 'journalctl -u car -f'"
+          echo "  ssh localhost@nfe.local 'systemctl restart car'"
+          echo "  ssh localhost@nfe.local 'cyclictest -p80 -t -n -q'"
+          echo "  ─────────────────────────────────────────────────────"
+          echo ""
+        '';
+      };
+    });
+  };
+}
+</file>
+
+<file path="README.md">
+# NFE — Autonomous RC Car
+
+**RPi 5 · NixOS PREEMPT_RT · Rust/Tokio control loop · deploy-rs**
+
+```
+Chassis: CARTEN M210 1/10
+ESC:     Hobbywing QUICRUN 10BL120 120A
+Motor:   Rocket 540 V3 4.5T Sensored
+Servo:   INJORA INJS022 22KG Digital
+LIDAR:   Slamtec RPLiDAR A1 (UART/USB)
+IMU:     6-DOF (I2C)
+Sonar:   HC-SR04 (GPIO)
+UPS:     Geekworm X1200 (5.1V 5A, 2-cell 18650)
+```
+
+---
+
+## Repository layout
+
+```
+flake.nix                       — Inputs, nixosConfigurations, deploy-rs, devShell
+hosts/
+  nfe/
+    configuration.nix           — Host config: hostname=nfe, user=localhost, SSH, car.service, wifi, dt-params, dt-overlays
+modules/
+  preempt-rt.nix                — PREEMPT_RT kernel overlay + isolcpus=3, HZ=1000
+  car-service.nix               — systemd car.service (SCHED_FIFO, core 3, watchdog)
+packages/
+  car-software/
+    Cargo.toml                  — Rust deps: tokio, rppal, tracing-journald, libsystemd…
+    default.nix                 — Nix derivation (cross-compiled aarch64)
+    src/
+      main.rs                   — Control loop: SensorFusion → LQR + PID → Actuate → Watchdog
+```
+
+---
+
+## First-time setup
+
+### 1. Test the package
+
+```bash
+nix develop
+nix build ".#car-software"
+```
+
+```nix
+users.users.localhost.openssh.authorizedKeys.keys = [
+  "ssh-ed25519 AAAA... you@devmachine"
+];
+users.users.root.openssh.authorizedKeys.keys = [
+  "ssh-ed25519 AAAA... you@devmachine"
+];
+```
+
+### 2. Build the SD card image
+
+```bash
+nix build .#nixosConfigurations.nfe.config.system.build.sdImage
+```
+
+The image ends up at `result/sd-image/nixos-*.img.zst`. Decompress and flash:
+
+```bash
+zstd -d result/sd-image/nixos-*.img.zst -o nfe.img
+sudo dd if=nfe.img of=/dev/sdX bs=4M status=progress conv=fsync
+```
+
+### 3. First boot
+
+Insert SD, power on. The Pi will appear on your network as `nfe.local` via mDNS.
+
+```bash
+ssh localhost@nfe.local # or ssh localhost@<IP>
+```
+
+---
+
+## Day-to-day workflow
+
+### Enter the dev shell
+
+```bash
+nix develop
+```
+
+All tools (deploy, cargo, cyclictest, nixpkgs-fmt) are in PATH.
+
+### Build only the car binary
+
+```bash
+nix build .#car-software
+# result/bin/car  — aarch64-linux ELF
+```
+
+### Deploy to the Pi
+
+```bash
+deploy .#nfe
+```
+
+deploy-rs will:
+
+1. Build the NixOS closure on your machine (cross-compiling to aarch64)
+2. Copy the closure to nfe via SSH
+3. Activate it (`nixos-rebuild switch`)
+4. Wait up to 60 s for confirmation
+5. **Auto-rollback** if activation fails or the Pi becomes unreachable
+
+### Dry run (no changes applied)
+
+```bash
+deploy .#nfe -- --dry-activate
+```
+
+---
+
+## Service lifecycle
+
+All commands run **from your dev machine** via SSH:
+
+```bash
+# Status
+ssh localhost@nfe.local 'systemctl status car'
+
+# Start / stop / restart
+ssh localhost@nfe.local 'systemctl start car'
+ssh localhost@nfe.local 'systemctl stop car'
+ssh localhost@nfe.local 'systemctl restart car'
+
+# Live logs (tail)
+ssh localhost@nfe.local 'journalctl -u car -f'
+
+# Last 200 lines
+ssh localhost@nfe.local 'journalctl -u car -n 200'
+
+# Since last deploy
+ssh localhost@nfe.local 'journalctl -u car --since "10 min ago"'
+
+# Kernel RT + isolation messages
+ssh localhost@nfe.local 'journalctl -k --grep="isolcpus\|PREEMPT_RT\|nohz"'
+```
+
+---
+
+## Rollback
+
+### deploy-rs automatic rollback
+
+If the Pi doesn't respond within `confirmTimeout = 60` seconds, deploy-rs rolls
+back automatically.
+
+### Manual rollback over SSH
+
+```bash
+ssh root@nfe.local 'nixos-rebuild --rollback'
+```
+
+### Pick a specific generation
+
+```bash
+ssh localhost@nfe.local 'nix-env --list-generations --profile /nix/var/nix/profiles/system'
+ssh root@nfe.local '/nix/var/nix/profiles/system-N-link/bin/switch-to-configuration switch'
+```
+
+---
+
+## RT verification
+
+Once deployed, verify the kernel and latency:
+
+```bash
+# Confirm PREEMPT_RT is active
+ssh localhost@nfe.local 'uname -a'
+# → Linux nfe 6.x.x-rt... #1 SMP PREEMPT_RT ...
+
+# Confirm core 3 is isolated
+ssh localhost@nfe.local 'cat /sys/devices/system/cpu/isolated'
+# → 3
+
+# Latency test on the isolated core (run for 60 s, SCHED_FIFO prio 80)
+ssh localhost@nfe.local 'cyclictest -p 80 -t 1 -a 3 -n -q -D 60'
+# Target: max latency < 100 µs; typical < 30 µs on RPi5 RT
+```
+
+---
+
+## Tuning the controllers
+
+Both the LQR gains and PID gains live in `packages/car-software/src/main.rs`:
+
+```rust
+// LQR gains [lateral_error, lateral_rate, heading_error, heading_rate]
+Self { k: [0.8, 0.3, 1.2, 0.4] }
+
+// PID (kp, ki, kd)
+Pid::new(1.5, 0.05, 0.2)
+```
+
+Edit → `nix build .#car-software` → `deploy .#nfe` → `journalctl -u car -f`.
+
+---
+
+## Hardware wiring reference
+
+| Signal        | BCM pin | Header pin | Notes          |
+| ------------- | ------- | ---------- | -------------- |
+| ESC PWM       | 18      | 12         | Hardware PWM0  |
+| Servo PWM     | 19      | 35         | Hardware PWM1  |
+| Sonar TRIG    | 23      | 16         |                |
+| Sonar ECHO    | 24      | 18         | 3.3 V tolerant |
+| IMU SDA (I2C) | 2       | 3          | 4.7 kΩ pull-up |
+| IMU SCL (I2C) | 3       | 5          | 4.7 kΩ pull-up |
+| LIDAR UART TX | 14      | 8          | RPLiDAR A1 RX  |
+| LIDAR UART RX | 15      | 10         | RPLiDAR A1 TX  |
+
+LIDAR can also use the USB adapter — it will appear as `/dev/lidar` via the udev
+symlink rule in `modules/car-service.nix`.
+
+---
+
+## Safety notes
+
+- The **watchdog** (3 missed 100 Hz ticks) puts ESC to neutral and servo to
+  center.
+- The **obstacle check** (< 0.3 m front LIDAR / sonar) triggers `safe_state()`
+  immediately.
+- systemd `WatchdogSec=5s` kills and restarts the service if it stops calling
+  `sd_notify`.
+- `deploy-rs` auto-rollback prevents a bad deploy from leaving the car
+  unreachable.
+</file>
+
+</files>
