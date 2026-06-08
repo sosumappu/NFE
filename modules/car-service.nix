@@ -43,7 +43,6 @@
       description = "Car control service user";
     };
     users.groups.car = {};
-    # groupes non crée a l'initialisation
     users.groups.i2c = {};
     users.groups.gpio = {};
     users.groups.spi = {};
@@ -73,7 +72,7 @@
 
         # ── Restart policy ────────────────────────────────────────
         Restart = "always";
-        RestartSec = "500ms";
+        RestartSec = "10s";
 
         # ── Watchdog integration ──────────────────────────────────
         # systemd kills the service if it doesn't notify within 5s
@@ -88,22 +87,29 @@
         SyslogIdentifier = "car";
 
         # ── Capabilities ──────────────────────────────────────────
-        AmbientCapabilities = ["CAP_SYS_NICE" "CAP_IPC_LOCK"];
-        CapabilityBoundingSet = ["CAP_SYS_NICE" "CAP_IPC_LOCK"];
-
-        # ── Security hardening (compatible with RT) ───────────────
-        NoNewPrivileges = true;
-        ProtectSystem = "strict";
-        ProtectHome = true;
-        PrivateTmp = true;
-        # Allow GPIO/I2C/UART device access
-        DeviceAllow = [
-          "/dev/gpiochip0 rw"
-          "/dev/i2c-1 rw"
-          "/dev/ttyAMA0 rw" # LIDAR UART
-          "/dev/ttyUSB0 rw" # LIDAR USB fallback
-        ];
-        DevicePolicy = "closed";
+        # AmbientCapabilities = ["CAP_SYS_NICE" "CAP_IPC_LOCK"];
+        # CapabilityBoundingSet = ["CAP_SYS_NICE" "CAP_IPC_LOCK"];
+        #
+        # # ── Security hardening (compatible with RT) ───────────────
+        # NoNewPrivileges = true;
+        # ProtectSystem = "strict";
+        # ProtectHome = true;
+        # PrivateTmp = true;
+        # # Allow GPIO/I2C/UART device access
+        # DeviceAllow = [
+        #   "/dev/gpiochip0 rw"
+        #   "/dev/i2c-1 rw"
+        #   "/dev/ttyAMA0 rw"
+        #   "/dev/ttyUSB0 rw"
+        #   "/dev/pwmchip0 rw"
+        #   "/dev/pwmchip1 rw"
+        #   "/dev/pwmchip2 rw"
+        #   "/dev/pwmchip3 rw"
+        #   "/dev/gpiochip4 rw"
+        #   "/dev/gpiomem4 rw"
+        # ];
+        # ReadWritePaths = ["/sys/class/pwm"];
+        # DevicePolicy = "auto";
       };
 
       # Environment passed to the control binary
@@ -118,6 +124,9 @@
     services.udev.extraRules = ''
       # GPIO
       SUBSYSTEM=="gpio", GROUP="gpio", MODE="0660"
+
+      KERNEL=="gpiomem*", GROUP="gpio", MODE="0660"
+      SUBSYSTEM=="bcm2835-gpiomem", GROUP="gpio", MODE="0660"
       # I2C (IMU)
       SUBSYSTEM=="i2c-dev", GROUP="i2c", MODE="0660"
       # LIDAR UART

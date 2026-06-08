@@ -4,12 +4,14 @@
   nixConfig = {
     bash-prompt = "\\[nfe\\] ➜ ";
     extra-substituters = [
+      "https://cache.nixos.org"
       "https://nixos-raspberrypi.cachix.org"
       "https://nix-community.cachix.org"
     ];
     extra-trusted-public-keys = [
+      "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
       "nixos-raspberrypi.cachix.org-1:4iMO9LXa8BqhU+Rpg6LQKiGa2lsNh/j2oiYLNOQ5sPI="
-      "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCUSeBc="
+      "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
     ];
     connect-timeout = 5;
   };
@@ -66,18 +68,35 @@
 
     #
     packages = forSystems (system: {
-      inherit (pkgsFor system) car-software;
-      default = (pkgsFor system).car-software;
+      inherit ((pkgsFor "aarch64-linux")) car-software;
+      default = (pkgsFor "aarch64-linux").car-software;
     });
 
     # ── NixOS configuration: nfe ──────────────────────────────────
     nixosConfigurations.nfe = nixos-raspberrypi.lib.nixosSystemFull {
+      system = "aarch64-linux";
       specialArgs = inputs;
       modules = [
         ./hosts/nfe/configuration.nix
         {
+          nixpkgs.buildPlatform = "aarch64-linux";
           nixpkgs.overlays = [self.overlays.default];
-          nixpkgs.crossSystem = nixpkgs.lib.systems.elaborate targetSystem;
+          fileSystems."/" = {
+            device = "/dev/disk/by-label/NIXOS_SD";
+            fsType = "ext4";
+            options = ["noatime"];
+          };
+
+          fileSystems."/boot/firmware" = {
+            device = "/dev/disk/by-label/FIRMWARE";
+            fsType = "vfat";
+            options = ["noatime"];
+          };
+
+          zramSwap = {
+            enable = true;
+            algorithm = "zstd";
+          };
         }
       ];
     };
@@ -89,9 +108,9 @@
     deploy.nodes.nfe = {
       hostname = "nfe.local";
       sshUser = "localhost";
-      sshOpts = ["-o" "StrictHostKeyChecking=accept-new"];
-      magicRollback = true;
-      autoRollback = true;
+      sshOpts = ["-i" "/Users/localhost/.ssh/nix_builder" "-o" "StrictHostKeyChecking=accept-new"];
+      magicRollback = false;
+      autoRollback = false;
       confirmTimeout = 60;
 
       profiles.system = {
@@ -103,10 +122,8 @@
     };
 
     # deploy-rs schema checks
-    checks = forSystems (
-      system:
-        deploy-rs.lib.${system}.deployChecks self.deploy
-    );
+    checks.${targetSystem} =
+      deploy-rs.lib.${targetSystem}.deployChecks self.deploy;
 
     # ── Dev shell ──────────────────────────────────────────────────
     devShells = forSystems (system: let
@@ -131,15 +148,36 @@
         shellHook = ''
           echo ""
           echo "  NeverFastEnough dev shell"
-          echo "  ─────────────────────────────────────────────────────"
-          echo "  nom build .#packages.aarch64-linux.car-software   build binary"
-          echo "  deploy .#nfe                                      deploy to Pi"
-          echo "  deploy .#nfe -- --rollback                        roll back"
-          echo "  ssh localhost@nfe.local                           shell on Pi"
-          echo "  ssh localhost@nfe.local 'journalctl -u car -f'"
-          echo "  ssh localhost@nfe.local 'systemctl restart car'"
-          echo "  ssh localhost@nfe.local 'cyclictest -p80 -t -n -q'"
-          echo "  ─────────────────────────────────────────────────────"
+          echo "  ─────────────────────────────────────────────────────────────────"
+          echo "  Build"
+          echo "    nom build .#packages.aarch64-linux.car-software  build all binaries"
+          echo "    cross build --release --target aarch64-unknown-linux-gnu  fast binary build"
+          echo ""
+          echo "  Deploy"
+          echo "    deploy .#nfe                                      deploy to Pi"
+          echo "    deploy .#nfe -- --rollback                        roll back one generation"
+          echo "    deploy .#nfe -- --dry-activate                    dry run"
+          echo ""
+          echo "  On the Pi (via SSH)"
+          echo "    ssh localhost@nfe.local 'car-diag all'            verify all sensors"
+          echo "    ssh localhost@nfe.local 'car-diag imu --once'     single IMU reading"
+          echo "    ssh localhost@nfe.local 'car-diag lidar'          live LIDAR stats"
+          echo "    ssh localhost@nfe.local 'car-diag sonar --once'   sonar pass/fail"
+          echo "    ssh localhost@nfe.local 'car --record /tmp/s.bin' record a session"
+          echo "    ssh localhost@nfe.local 'car --stream'            broadcast sensors UDP:9200"
+          echo "    ssh localhost@nfe.local 'systemctl restart car'   restart service"
+          echo "    ssh localhost@nfe.local 'journalctl -u car -f'    live service logs"
+          echo ""
+          echo "  On Dev Machine"
+          echo "    cargo run --bin car-monitor -- --pi nfe.local     live dashboard"
+          echo "    cargo run --release -- --replay sessions/s.bin    replay session"
+          echo "    cargo run --release -- --replay sessions/s.bin --fast  fast replay"
+          echo "    scp localhost@nfe.local:/tmp/s.bin sessions/      copy session file"
+          echo ""
+          echo "  RT verification"
+          echo "    ssh localhost@nfe.local 'cyclictest -p80 -t1 -a3 -n -q -D60'  latency test"
+          echo "    ssh localhost@nfe.local 'cat /sys/devices/system/cpu/isolated' check core isolation"
+          echo "  ─────────────────────────────────────────────────────────────────"
           echo ""
         '';
       };

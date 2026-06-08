@@ -147,16 +147,19 @@ fn run_lidar(once: bool) {
     println!("── LIDAR diagnostic ({LIDAR_PORT} @ {LIDAR_BAUD}baud) ──");
 
     let mut port: Box<dyn SerialPort> = match serialport::new(LIDAR_PORT, LIDAR_BAUD)
+        .dtr_on_open(false)
         .timeout(Duration::from_millis(500))
         .open()
     {
         Ok(p) => p,
         Err(e) => { fail(&format!("cannot open {LIDAR_PORT}: {e}\n→ check USB cable, udev rule, /dev/lidar symlink")); }
     };
+    let _ = port.clear(serialport::ClearBuffer::All);
 
     // Reset + start scan
     port.write_all(&[0xA5, 0x40]).ok();
-    thread::sleep(Duration::from_millis(100));
+    thread::sleep(Duration::from_millis(2000));
+    let _ = port.clear(serialport::ClearBuffer::All);
     port.write_all(&[0xA5, 0x20]).ok();
     port.flush().ok();
 

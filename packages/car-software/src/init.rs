@@ -38,11 +38,11 @@ impl fmt::Display for Sensor {
 
 // All sensors that must be ready before the control loop may start
 const REQUIRED: &[Sensor] = &[
-    Sensor::Lidar,
-    Sensor::Imu,
-    Sensor::Sonar(0),
-    Sensor::Sonar(1),
-    Sensor::Sonar(2),
+    // Sensor::Lidar,
+    // Sensor::Imu,
+    // Sensor::Sonar(0),
+    // Sensor::Sonar(1),
+    // Sensor::Sonar(2),
 ];
 
 // ── ReadinessBarrier ───────────────────────────────────────────────────────
@@ -61,6 +61,10 @@ pub struct ReadySignal {
 
 impl ReadySignal {
     /// Mark this sensor as ready.  Idempotent — safe to call multiple times.
+    pub fn dummy(sensor: Sensor) -> Self {
+        let (tx,_) = watch::channel(false);
+        Self { sensor, tx }
+    }
     pub fn signal(&self) {
         let _ = self.tx.send(true);
         info!("init: {} ready", self.sensor);

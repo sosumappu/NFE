@@ -15,8 +15,25 @@
 const K: [f32; 4] = [0.80, 0.30, 1.20, 0.40];
 
 /// TODO: importer la constante SERVO_MAX_RAD(main.rs) via le constructeur
-const STEER_MAX_RAD: f32 = 0.5;
+use crate::control::actuate::SERVO_MAX_RAD;
 
+pub struct LqrState {
+    pub lateral_error_m: f32,
+    pub lateral_rate_m_s: f32,
+    pub heading_error_rad: f32,
+    pub yaw_rate_rad_s: f32,
+}
+
+impl LqrState {
+    pub fn as_array(&self) -> [f32; 4] {
+        [
+            self.lateral_error_m,
+            self.lateral_rate_m_s,
+            self.heading_error_rad,
+            self.yaw_rate_rad_s,
+        ]
+    }
+}
 pub struct Lqr {
     k: [f32; 4],
 }
@@ -28,9 +45,10 @@ impl Lqr {
 
     /// Renvoies l'angle de virage en rad
     /// Positif = left, negatif = right
-    pub fn compute_lateral(&self, state: [f32; 4]) -> f32 {
-        let u: f32 = self.k.iter().zip(state.iter()).map(|(k, x)| k * x).sum();
-        u.clamp(-STEER_MAX_RAD, STEER_MAX_RAD)
+    pub fn compute_lateral(&self, state: &LqrState) -> f32 {
+        let mat = state.as_array();
+        let u: f32 = self.k.iter().zip(mat.iter()).map(|(k, x)| k * x).sum();
+        u.clamp(-SERVO_MAX_RAD, SERVO_MAX_RAD)
     }
 
     /// Pour tuner en realtime avec un UDP)

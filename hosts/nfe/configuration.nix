@@ -9,11 +9,12 @@
     nixos-raspberrypi.nixosModules.raspberry-pi-5.base
     nixos-raspberrypi.nixosModules.raspberry-pi-5.page-size-16k
 
-    ../modules/preempt-rt.nix # patch pour le real time
-    ../modules/car-service.nix # car.service systemd unit
+    ../../modules/preempt-rt.nix # patch pour le real time
+    ../../modules/car-service.nix # car.service systemd unit
   ];
 
-  networking.hostName = "nfe";
+  networking = {hostName = lib.mkForce "nfe";};
+
   time.timeZone = "UTC";
 
   users.users.localhost = {
@@ -22,18 +23,14 @@
     # Set a real password with: passwd localhost  — or use hashedPassword
     initialHashedPassword = ""; # passwordless for initial flash; harden post-deploy
     openssh.authorizedKeys.keys = [
-      "ssh-ed25519
-AAAAC3NzaC1lZDI1NTE5AAAAIOF1uj9DgHdyYxOezFk2GhrgdFR8DWoXXVr/O2g2CMfG
-adelarab.works@gmail.com"
+      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOF1uj9DgHdyYxOezFk2GhrgdFR8DWoXXVr/O2g2CMfG adelarab.works@gmail.com"
     ];
   };
 
   users.users.root = {
     initialHashedPassword = "";
     openssh.authorizedKeys.keys = [
-      "ssh-ed25519
-AAAAC3NzaC1lZDI1NTE5AAAAIOF1uj9DgHdyYxOezFk2GhrgdFR8DWoXXVr/O2g2CMfG
-adelarab.works@gmail.com"
+      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOF1uj9DgHdyYxOezFk2GhrgdFR8DWoXXVr/O2g2CMfG adelarab.works@gmail.com"
     ];
   };
 
@@ -143,6 +140,7 @@ adelarab.works@gmail.com"
 
   # ── Boot / bootloader ─────────────────────────────────────────
   boot.tmp.useTmpfs = true;
+  boot.loader.raspberry-pi.bootloader = "kernel";
 
   # ── car.service ───────────────────────────────────────────────
   # Enabled here; package wired in flake.nix once car-software builds
@@ -161,6 +159,7 @@ adelarab.works@gmail.com"
     # RT debugging
     rt-tests # cyclictest, hackbench
     ethtool
+    car-software
   ];
 
   # ── Nix settings (allow deploy-rs to push closures) ───────────

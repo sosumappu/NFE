@@ -1,6 +1,6 @@
 [package]
 name = "car"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "NFE — CARTEN M210 autonomous car control loop (PREEMPT_RT / Tokio)"
 
@@ -14,24 +14,31 @@ path = "src/main.rs"
 name = "car-diag"
 path = "src/bin/diag.rs"
 
+[[bin]]
+name = "car-monitor"
+path = "src/bin/monitor.rs"
+
 # ── Dependencies ──────────────────────────────────────────────────────────
 
 [dependencies]
-# Async runtime — current_thread, stays on core 3 (CPUAffinity)
+# Async runtime
 tokio = { version = "1", features = ["rt", "time", "sync", "macros", "signal"] }
 
-# Structured logging → journald when running under systemd
+# Structured logging
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-journald = "0.3"
 
-# GPIO, I2C, hardware PWM — Linux/RPi only
+# GPIO, I2C, hardware PWM — gated behind cfg(target_os = "linux")
 rppal = "0.18"
 
 # Serial port for LIDAR UART
 serialport = "4"
 
-# Fast non-poisoning RwLock for sensor state shared between threads
+# Avoid clone the lidar cloud
+arc-swap = "1"
+
+# Fast non-poisoning RwLock
 parking_lot = "0.12"
 
 # systemd sd_notify + watchdog
@@ -43,6 +50,16 @@ libc = "0.2"
 # Error handling
 anyhow = "1"
 
+# Serialization — used for replay frames and UDP stream frames
+bincode = "1"
+serde = { version = "1", features = ["derive"] }
+serde-big-array = "0.5.1"
+
+# Rust's numpy
+ndarray = "0.17.2"
+
+# ── Profiles ──────────────────────────────────────────────────────────────
+
 [profile.release]
 opt-level = 3
 lto = "thin"
@@ -50,5 +67,4 @@ codegen-units = 1
 panic = "abort"
 
 [profile.dev]
-# Faster iteration on the Pi during development
 opt-level = 1
