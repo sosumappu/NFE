@@ -20,16 +20,20 @@ impl SpeedPlanner {
     /// 1 = clear, 0 = obstacle very close
     fn proximity_factor(&self, cloud: &LidarCloudView, steering_angle: f32) -> f32 {
         let half_arc = 30.0_f32.to_radians();
-        let mut num = 0.0;
-        let mut den = 0.0;
+        let mut num = 0.0f32;
+        let mut den = 0.0f32;
+
         for p in cloud.points {
-            if ((p.angle_rad - steering_angle + PI).rem_euclid(TAU) - PI).abs() <= half_arc {
-                // TODO: Smooth the weight values
-                let w = 1.0 / (p.angle_rad.abs() + 0.05); // weight: closer to waypoint = more important
-                num += w / (p.dist_m * p.dist_m).max(0.01);
-                den += w;
+            let diff = ((p.angle_rad - steering_angle + PI).rem_euclid(TAU) - PI).abs();
+            if diff > half_arc {
+                continue;
             }
+
+            let w = 1.0 / (diff + 0.05);
+            num += w / (p.dist_m * p.dist_m).max(0.01);
+            den += w;
         }
+
         if den == 0.0 {
             return 1.0;
         }

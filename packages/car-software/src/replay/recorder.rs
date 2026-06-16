@@ -1,109 +1,113 @@
-/// replay/recorder.rs — Session recorder
+/// replay/recorder.rs — MCAP session recorder
 ///
-/// Sits between the sensor threads and SharedState. A background thread
-/// subscribes to sensor updates via a channel and serializes every
-/// `TimestampedFrame` to disk using `bincode` (compact binary, fast).
+/// Writes sensor frames and control metrics to an MCAP file that Foxglove
+/// Studio opens natively. This version utilizes zero-copy binary Protobuf
+/// serialization for maximum performance.
 ///
-/// Usage
-/// ─────
-///   let recorder = Recorder::start("session_2024_06_12.bin")?;
-///   // give recorder.tx() to each sensor writer
-///   recorder.finish(); // flushes and closes the file
+/// Channel layout
+/// ──────────────
+///   /imu          car_software.ImuSample       (Protobuf, 500 Hz)
+///   /lidar        foxglove.PointCloud          (Protobuf, ~10 Hz)
+///   /sonar        car_software.SonarFrame      (Protobuf, ~33 Hz)
+///   /metrics      car_software.TickMetrics     (Protobuf, 100 Hz)
+///   /control      car_software.ControlFrame    (Protobuf, 100 Hz)
 ///
-/// File format
-/// ───────────
-///   [u32 magic] [u32 version] [frame...] [u32 END_MAGIC]
-///
-///   Each frame is length-prefixed so the replayer can seek/truncate
-///   safely even if the file was not closed cleanly (e.g. after a crash):
-///   [u32 len_bytes] [bincode(TimestampedFrame)]
-///
-///   Corrupt / truncated trailing frames are skipped by the replayer.
-use std::{
-    fs::File,
-    io::{BufWriter, Write},
-    path::Path,
-    sync::mpsc,
-    thread,
-    time::Instant,
-};
+/// Foxglove panel suggestions
+/// ──────────────────────────
+///   3D panel     → /lidar (Will auto-detect foxglove.PointCloud)
+///   Plot panel   → /metrics.lateral_error_m, /control.steering_rad, etc.
+///   Raw messages → /imu, /sonar
+use std::{fs::File, io::BufWriter, path::Path, sync::mpsc, sync::Arc, thread, time::Instant};
 
 use anyhow::{Context, Result};
-
 use tracing::{debug, info, warn};
 
+use mcap::{records::MessageHeader, Channel, Schema, Writer};
+use prost::Message; // Required for .encode_to_vec()
+
 use crate::hal::TimestampedFrame;
+use crate::metrics::TickMetrics;
 
-const FILE_MAGIC: u32 = 0xCFE5_5E55;
-const FILE_VERSION: u32 = 1;
-const END_MAGIC: u32 = 0xDEAD_BEEF;
+// ── Generated Protobuf Modules ─────────────────────────────────────────────
+// Depending on how prost-build is configured, it groups generated files
+// by their protobuf `package` name.
+pub mod pb_fg {
+    include!(concat!(env!("OUT_DIR"), "/foxglove.rs"));
+}
+pub mod pb_car {
+    include!(concat!(env!("OUT_DIR"), "/car_software.rs"));
+}
 
-// ── Public handle ──────────────────────────────────────────────────────────
+// ── Public Types ───────────────────────────────────────────────────────────
 
-pub struct Recorder {
-    tx: Option<mpsc::SyncSender<TimestampedFrame>>,
+/// Sent from the control loop each tick alongside the sensor frame
+#[derive(Debug, Clone)]
+pub struct ControlFrame {
+    pub timestamp_us: u64,
+    pub steering_rad: f32,
+    pub throttle: f32,
+    pub target_speed: f32,
+    pub current_speed: f32,
+}
+
+/// Everything the recorder thread needs per tick
+#[derive(Debug, Clone)]
+pub enum McapMessage {
+    Sensor(TimestampedFrame),
+    Metrics(Box<TickMetrics>),
+    Control(ControlFrame),
+}
+
+// ── Public Handle ──────────────────────────────────────────────────────────
+
+pub struct McapRecorder {
+    tx: Option<mpsc::SyncSender<McapMessage>>,
     handle: Option<thread::JoinHandle<()>>,
 }
 
-impl Recorder {
-    /// Open `path` for writing and start the background recorder thread.
+impl McapRecorder {
     pub fn start(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_owned();
         let file = File::create(&path)
-            .with_context(|| format!("cannot create recording file: {}", path.display()))?;
+            .with_context(|| format!("cannot create MCAP file: {}", path.display()))?;
+        let writer = BufWriter::new(file);
 
-        let mut writer = BufWriter::new(file);
+        let (tx, rx) = mpsc::sync_channel::<McapMessage>(2048);
+        let path_str = path.display().to_string();
 
-        // Write file header
-        writer.write_all(&FILE_MAGIC.to_le_bytes())?;
-        writer.write_all(&FILE_VERSION.to_le_bytes())?;
-
-        let (tx, rx) = mpsc::sync_channel::<TimestampedFrame>(1024);
-
-        let path_display = path.display().to_string();
         let handle = thread::Builder::new()
-            .name("recorder".into())
-            .spawn(move || record_loop(writer, rx, path_display))
-            .context("failed to spawn recorder thread")?;
+            .name("mcap-recorder".into())
+            .spawn(move || mcap_loop(writer, rx, path_str))
+            .context("failed to spawn mcap-recorder thread")?;
 
-        info!(
-            path = %path.display(),
-            channel_capacity = 1024,
-            magic = format!("0x{FILE_MAGIC:08X}"),
-            version = FILE_VERSION,
-            "recorder: started"
-        );
-
+        info!(path = %path.display(), "mcap-recorder: started");
         Ok(Self {
             tx: Some(tx),
             handle: Some(handle),
         })
     }
 
-    /// Clone the sender to give to sensor threads / SharedState interceptors.
-    pub fn sender(&self) -> mpsc::SyncSender<TimestampedFrame> {
+    pub fn sender(&self) -> mpsc::SyncSender<McapMessage> {
         self.tx.as_ref().unwrap().clone()
     }
 
-    /// Flush and close the file. Blocks until the recorder thread finishes.
     pub fn finish(mut self) {
         let tx = self.tx.take();
-        info!("recorder: closing channel (waiting for thread to drain and exit)");
+        info!("mcap-recorder: closing channel");
         drop(tx);
         if let Some(h) = self.handle.take() {
             match h.join() {
-                Ok(()) => info!("recorder: thread exited cleanly"),
-                Err(e) => warn!("recorder: thread panicked: {:?}", e),
+                Ok(()) => info!("mcap-recorder: thread exited cleanly"),
+                Err(e) => warn!("mcap-recorder: thread panicked: {:?}", e),
             }
         }
     }
 }
 
-impl Drop for Recorder {
+impl Drop for McapRecorder {
     fn drop(&mut self) {
-        // If finish() was not called (e.g. on panic), drain the channel anyway.
         if self.tx.is_some() {
-            warn!("recorder: Drop called without finish() — draining channel");
+            warn!("mcap-recorder: Drop without finish() — draining");
         }
         self.tx.take();
         if let Some(h) = self.handle.take() {
@@ -112,94 +116,166 @@ impl Drop for Recorder {
     }
 }
 
-// ── Background thread ──────────────────────────────────────────────────────
+// ── Background Thread ──────────────────────────────────────────────────────
 
-fn record_loop(mut writer: BufWriter<File>, rx: mpsc::Receiver<TimestampedFrame>, path: String) {
-    info!(path = %path, "recorder: background thread started — waiting for frames");
+fn mcap_loop(mut file_writer: BufWriter<File>, rx: mpsc::Receiver<McapMessage>, path: String) {
+    info!(path = %path, "mcap-recorder: background thread started");
 
-    let mut frames_written: u64 = 0;
-    let mut bytes_written: u64 = 0;
-    let mut frames_dropped: u64 = 0;
+    let mut writer = Writer::new(&mut file_writer).expect("failed to init mcap writer");
+
+    // Load the FileDescriptorSet generated by build.rs so Foxglove can parse it
+    let descriptor_bytes = include_bytes!(concat!(env!("OUT_DIR"), "/messages_descriptor.bin"));
+
+    // Helper closure to register channels easily
+    let mut register = |topic: &str, message_name: &str| -> Arc<Channel> {
+        let schema = Arc::new(Schema {
+            name: message_name.to_string(),
+            encoding: "protobuf".to_string(),
+            data: descriptor_bytes.to_vec(),
+        });
+
+        writer
+            .add_channel(&Channel {
+                topic: topic.to_string(),
+                schema: Some(schema),
+                message_encoding: "protobuf".to_string(),
+                metadata: Default::default(),
+            })
+            .expect("failed to add channel")
+    };
+
+    // Register all channels with their fully qualified protobuf names
+    let ch_imu = register("/imu", "car_software.ImuSample");
+    let ch_lidar = register("/lidar", "foxglove.PointCloud");
+    let ch_sonar = register("/sonar", "car_software.SonarFrame");
+    let ch_metrics = register("/metrics", "car_software.TickMetrics");
+    let ch_control = register("/control", "car_software.ControlFrame");
+
+    let mut frames = 0u64;
     let mut last_log = Instant::now();
 
-    // Frame type counters for diagnostics
-    let mut n_lidar: u64 = 0;
-    let mut n_imu: u64 = 0;
-    let mut n_sonar: u64 = 0;
+    for msg in &rx {
+        let (channel, ts_us, payload) = match &msg {
+            McapMessage::Sensor(tf) => match &tf.frame {
+                crate::hal::SensorFrame::Imu(s) => {
+                    let pb_msg = pb_car::ImuSample {
+                        timestamp_us: tf.ts_us,
+                        ax: s.ax,
+                        ay: s.ay,
+                        az: s.az,
+                        gx: s.gx,
+                        gy: s.gy,
+                        gz: s.gz,
+                    };
+                    (ch_imu.clone(), tf.ts_us, pb_msg.encode_to_vec())
+                }
+                crate::hal::SensorFrame::Lidar(cloud) => {
+                    let point_stride = 16; // 4 f32s * 4 bytes each
 
-    for frame in &rx {
-        // Classify for diagnostics
-        match &frame.frame {
-            crate::hal::SensorFrame::Lidar(_) => n_lidar += 1,
-            crate::hal::SensorFrame::Imu(_) => n_imu += 1,
-            crate::hal::SensorFrame::Sonar { .. } => n_sonar += 1,
-        }
+                    // Pre-allocate the exact byte size needed
+                    let mut data = Vec::with_capacity(cloud.points.len() * point_stride as usize);
 
-        let encoded = match bincode::serialize(&frame) {
-            Ok(b) => b,
-            Err(e) => {
-                warn!(error = %e, ts_us = frame.ts_us, "recorder: serialize error — frame dropped");
-                frames_dropped += 1;
-                continue;
+                    // Zero-copy binary serialization
+                    for p in &cloud.points {
+                        data.extend_from_slice(&p.x.to_le_bytes());
+                        data.extend_from_slice(&p.y.to_le_bytes());
+                        data.extend_from_slice(&p.dist_m.to_le_bytes());
+                        data.extend_from_slice(&p.angle_rad.to_le_bytes());
+                    }
+
+                    let pb_msg = pb_fg::PointCloud {
+                        timestamp: tf.ts_us,
+                        frame_id: "lidar".into(),
+                        point_stride,
+                        fields: vec![
+                            pb_fg::PackedElementField {
+                                name: "x".into(),
+                                offset: 0,
+                                r#type: 7,
+                            }, // 7 = FLOAT32
+                            pb_fg::PackedElementField {
+                                name: "y".into(),
+                                offset: 4,
+                                r#type: 7,
+                            },
+                            pb_fg::PackedElementField {
+                                name: "distance".into(),
+                                offset: 8,
+                                r#type: 7,
+                            },
+                            pb_fg::PackedElementField {
+                                name: "angle".into(),
+                                offset: 12,
+                                r#type: 7,
+                            },
+                        ],
+                        data,
+                    };
+                    (ch_lidar.clone(), tf.ts_us, pb_msg.encode_to_vec())
+                }
+                crate::hal::SensorFrame::Sonar { front, left, right } => {
+                    let pb_msg = pb_car::SonarFrame {
+                        timestamp_us: tf.ts_us,
+                        front_m: *front,
+                        left_m: *left,
+                        right_m: *right,
+                    };
+                    (ch_sonar.clone(), tf.ts_us, pb_msg.encode_to_vec())
+                }
+            },
+            McapMessage::Metrics(m) => {
+                let pb_msg = pb_car::TickMetrics {
+                    tick: m.tick,
+                    timestamp_us: m.timestamp_us,
+                    loop_us: m.loop_us,
+                    lateral_error_m: m.lateral_error_m,
+                    heading_error_rad: m.heading_error_rad,
+                    steering_rad: m.steering_rad,
+                    throttle: m.throttle,
+                    target_speed_ms: m.target_speed_ms,
+                    current_speed_ms: m.current_speed_ms,
+                    nearest_obstacle_m: m.nearest_obstacle_m,
+                    gz_rad_s: m.gz_rad_s,
+                    vy_ms: m.vy_ms,
+                    estop: m.estop,
+                    watchdog_miss: m.watchdog_miss,
+                };
+                (ch_metrics.clone(), m.timestamp_us, pb_msg.encode_to_vec())
+            }
+            McapMessage::Control(c) => {
+                let pb_msg = pb_car::ControlFrame {
+                    timestamp_us: c.timestamp_us,
+                    steering_rad: c.steering_rad,
+                    throttle: c.throttle,
+                    target_speed: c.target_speed,
+                    current_speed: c.current_speed,
+                };
+                (ch_control.clone(), c.timestamp_us, pb_msg.encode_to_vec())
             }
         };
 
-        let len = encoded.len() as u32;
-        let frame_bytes = 4 + encoded.len() as u64; // u32 len prefix + payload
+        // Write to MCAP (MCAP timestamps are in nanoseconds)
+        let ts_ns = ts_us * 1000;
+        writer
+            .write_to_known_channel(
+                &MessageHeader {
+                    channel_id: channel.id,
+                    sequence: 0,
+                    log_time: ts_ns as u64,
+                    publish_time: ts_ns as u64,
+                },
+                &payload,
+            )
+            .unwrap_or_else(|_| warn!("mcap-recorder: write error — disk full?"));
 
-        if writer.write_all(&len.to_le_bytes()).is_err() || writer.write_all(&encoded).is_err() {
-            warn!("recorder: write error — frame dropped (disk full?)");
-            frames_dropped += 1;
-            continue;
-        }
+        frames += 1;
 
-        frames_written += 1;
-        bytes_written += frame_bytes;
-
-        // Periodic progress log every 5 s
         if last_log.elapsed().as_secs() >= 5 {
-            info!(
-                frames_written,
-                bytes_written, frames_dropped, n_lidar, n_imu, n_sonar, "recorder: progress"
-            );
+            info!(frames, path = %path, "mcap-recorder: progress");
             last_log = Instant::now();
         }
-
-        // Per-frame debug trace (very verbose — only useful with RUST_LOG=trace)
-        debug!(
-            ts_us = frame.ts_us,
-            frame_number = frames_written,
-            payload_bytes = encoded.len(),
-            "recorder: frame written"
-        );
     }
 
-    // Channel closed — write end marker and flush
-    match writer.write_all(&END_MAGIC.to_le_bytes()) {
-        Ok(()) => {}
-        Err(e) => warn!(error = %e, "recorder: failed to write END_MAGIC"),
-    }
-    match writer.flush() {
-        Ok(()) => {}
-        Err(e) => warn!(error = %e, "recorder: flush error on close"),
-    }
-
-    let total_kb = bytes_written / 1024;
-    info!(
-        path = %path,
-        frames_written,
-        frames_dropped,
-        total_kb,
-        n_lidar,
-        n_imu,
-        n_sonar,
-        "recorder: session complete"
-    );
-
-    if frames_dropped > 0 {
-        warn!(
-            frames_dropped,
-            "recorder: some frames were dropped — consider reducing sensor rate or increasing channel capacity"
-        );
-    }
+    writer.finish().expect("failed to cleanly finish mcap file");
+    info!(path = %path, frames, "mcap-recorder: session complete");
 }

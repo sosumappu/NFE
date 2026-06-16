@@ -16,7 +16,7 @@
 use std::f32::consts::{PI, TAU};
 use std::ops::Sub;
 
-const GRAVITY_OFFSET: f32 = 9.81; // depending on orientation can be negative
+const GRAVITY_MS2: f32 = 9.80665; // depending on orientation can be negative
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug)]
 pub struct LidarPoint {
@@ -33,7 +33,6 @@ impl LidarPoint {
     }
     pub fn derivative(&self, rhs: &Self) -> f32 {
         let d_theta = self.angle_diff(rhs);
-
         if d_theta.abs() < f32::EPSILON {
             0.0
         } else {
@@ -103,25 +102,23 @@ impl<'a> LidarCloudView<'a> {
         }
 
         let mut max = 0.0f32;
-        let mut max_point = &self.points[0];
+        let mut best: Option<&LidarPoint> = None;
 
         for w in self.points.windows(2) {
             //TODO: Monitor how .abs
-            let derivative = (w[1].derivative(&w[0])).abs();
+            let deriv = (w[1].derivative(&w[0]));
 
-            //WARN: might need to go with absolute value to find an edge going form close to far
-            // in current situation we only detect far to close (effectively works on right walls)
-            if derivative > max {
-                max = derivative;
-                max_point = if w[0].dist_m < w[1].dist_m {
+            if deriv.abs() > max {
+                max = deriv.abs();
+                best = Some(if w[0].dist_m < w[1].dist_m {
                     &w[0]
                 } else {
                     &w[1]
-                };
+                });
             }
         }
 
-        Some(max_point)
+        best
     }
 }
 
@@ -211,7 +208,8 @@ impl ImuBias {
         Self {
             bax: sum_ax / n,
             bay: sum_ay / n,
-            baz: (sum_az / n) - GRAVITY_OFFSET,
+            // WARN:needs to match the way we install the MPU on the car
+            baz: saz / n - GRAVITY_MS2,
             bgx: sum_gx / n,
             bgy: sum_gy / n,
             bgz: sum_gz / n,

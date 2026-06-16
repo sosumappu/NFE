@@ -43,6 +43,10 @@ impl Lqr {
         Self { k: K }
     }
 
+    pub fn new_with_gains(k: [f32; 4]) -> Self {
+        Self { k }
+    }
+
     /// Renvoies l'angle de virage en rad
     /// Positif = left, negatif = right
     pub fn compute_lateral(&self, state: &LqrState) -> f32 {

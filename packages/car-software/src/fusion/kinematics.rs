@@ -121,10 +121,10 @@ impl Kinematics {
         let t_ref = cloud.timestamp_us;
         buffer.clear();
         for point in &cloud.points {
+            let dt = t_ref.saturating_sub(point.timestamp_us) as f32 * 1e-6;
             let (vx, vy) = self.velocity_at(point.timestamp_us);
-            let dt = (t_ref.saturating_sub(point.timestamp_us)) as f32 * 1e-6;
-            let x = point.x - vx * dt;
-            let y = point.y - vy * dt;
+            let x = point.x + vx * dt;
+            let y = point.y + vy * dt;
 
             buffer.push(LidarPoint {
                 x,

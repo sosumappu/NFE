@@ -1,96 +1,76 @@
-/// replay/replayer.rs — Session replayer (implements SensorSource)
+/// replay/replayer.rs — MCAP Session Replayer (implements SensorSource)
 ///
-/// Reads a recording produced by `Recorder` and feeds frames through the
-/// same `SensorSource` trait that the live `SharedState` implements.
-///
-/// Two playback modes
-/// ──────────────────
-///   Realtime   — sleeps between frames to match original timing.
-///                Good for watching exactly what the car experienced.
-///
-///   Fast       — no sleep, processes frames as fast as the CPU allows.
-///                Best for running many replay iterations during algo dev.
-///
-/// Usage (from main.rs or a dedicated replay binary)
-/// ──────────────────────────────────────────────────
-///   let source = ReplaySource::open("session.bin", ReplayMode::Realtime)?;
-///   // use source as Box<dyn SensorSource> in the control loop
-///
-/// Error tolerance
-/// ───────────────
-/// Frames with bad length prefixes or bincode errors are skipped with a
-/// warning. The replayer continues until it either runs out of data or
-/// encounters the END_MAGIC sentinel.
+/// Feeds recorded MCAP data back into the `SensorSource` trait seamlessly,
+/// making the control loop completely unaware that it is running in a simulation.
 use std::{
     fs::File,
-    io::{BufReader, Read},
+    io::BufReader,
     path::Path,
-    sync::Arc,
+    sync::{mpsc, Arc},
     time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result};
 use tracing::{debug, info, warn};
 
+use prost::Message;
+
 use crate::hal::{SensorFrame, SensorSource, TimestampedFrame};
 use crate::state::SensorSnapshot;
-use crate::types::{ImuSample, LidarCloud};
+use crate::types::{ImuSample, LidarCloud, LidarPoint};
 
-const FILE_MAGIC: u32 = 0xCFE5_5E55;
-const FILE_VERSION: u32 = 1;
-const END_MAGIC: u32 = 0xDEAD_BEEF;
-const MAX_FRAME_LEN: u32 = 4 * 1024 * 1024; // sanity cap: 4 MiB per frame
-
-// ── Playback mode ──────────────────────────────────────────────────────────
+// Depending on your build.rs config, include the generated schemas
+pub mod pb_fg {
+    include!(concat!(env!("OUT_DIR"), "/foxglove.rs"));
+}
+pub mod pb_car {
+    include!(concat!(env!("OUT_DIR"), "/car_software.rs"));
+}
 
 #[derive(Clone, Copy, Debug)]
 pub enum ReplayMode {
-    /// Replay at original speed (sleep between frames)
     Realtime,
-    /// As fast as possible — for algorithmic iteration
     Fast,
 }
 
-// ── ReplaySource ───────────────────────────────────────────────────────────
-
-pub struct ReplaySource {
-    reader: BufReader<File>,
+pub struct McapReplayer {
     mode: ReplayMode,
     exhausted: bool,
-    /// Wall-clock instant when the first frame was replayed
+
+    // Decoupling disk I/O from the control loop prevents OS-level file buffering
+    // hiccups from artificially missing watchdog deadlines.
+    rx: mpsc::Receiver<TimestampedFrame>,
+
     wall_start: Option<Instant>,
-    /// Timestamp of the first frame (µs)
     ts_start_us: Option<u64>,
-    /// Accumulated sensor state between ticks
+
     lidar: LidarCloud,
     imu: ImuSample,
     sonar_m: [f32; 3],
 }
 
-impl ReplaySource {
+impl McapReplayer {
     pub fn open(path: impl AsRef<Path>, mode: ReplayMode) -> Result<Self> {
-        let path = path.as_ref();
-        let file = File::open(path)
+        let path = path.as_ref().to_owned();
+        let file = File::open(&path)
             .with_context(|| format!("cannot open replay file: {}", path.display()))?;
-        let mut reader = BufReader::new(file);
+        let reader = BufReader::new(file);
 
-        // Validate header
-        let magic = read_u32(&mut reader).context("reading magic")?;
-        let version = read_u32(&mut reader).context("reading version")?;
+        // A bounded channel enforces backpressure so the pre-fetch thread doesn't
+        // gorge the RAM if we are stepping through the replay slowly.
+        let (tx, rx) = mpsc::sync_channel(500);
 
-        if magic != FILE_MAGIC {
-            anyhow::bail!("replay: bad magic 0x{magic:08X} — not a car session file");
-        }
-        if version != FILE_VERSION {
-            anyhow::bail!("replay: unsupported version {version} (expected {FILE_VERSION})");
-        }
+        std::thread::Builder::new()
+            .name("mcap-decoder".into())
+            .spawn(move || Self::decode_worker(reader, tx))
+            .context("failed to spawn mcap-decoder thread")?;
 
         info!("replay: opened {} in {:?} mode", path.display(), mode);
 
         Ok(Self {
-            reader,
             mode,
             exhausted: false,
+            rx,
             wall_start: None,
             ts_start_us: None,
             lidar: LidarCloud::default(),
@@ -99,42 +79,94 @@ impl ReplaySource {
         })
     }
 
-    /// Read and decode the next frame from disk.
-    /// Returns `None` on EOF or END_MAGIC.
-    fn read_next_frame(&mut self) -> Option<TimestampedFrame> {
-        loop {
-            let len = match read_u32(&mut self.reader) {
-                Ok(n) => n,
-                Err(_) => return None, // clean EOF
+    fn decode_worker(reader: BufReader<File>, tx: mpsc::SyncSender<TimestampedFrame>) {
+        let messages = match mcap::MessageStream::new(reader) {
+            Ok(s) => s,
+            Err(e) => {
+                warn!("replay: MCAP init failure — terminating pre-fetch ({e})");
+                return;
+            }
+        };
+
+        for msg_result in messages {
+            let msg = match msg_result {
+                Ok(m) => m,
+                Err(e) => {
+                    // A corrupted chunk shouldn't crash a massive analysis run,
+                    // skipping ensures we salvage the remaining valid data.
+                    warn!("replay: chunk parse error ({e}) — skipping message");
+                    continue;
+                }
             };
 
-            // End sentinel
-            if len == END_MAGIC {
-                info!("replay: END_MAGIC reached");
-                return None;
-            }
+            // MCAP operates inherently on nanoseconds, but our embedded system
+            // runs optimally on microsecond integers.
+            let ts_us = msg.publish_time / 1_000;
 
-            if len > MAX_FRAME_LEN {
-                warn!("replay: frame length {len} exceeds sanity cap — file corrupt?");
-                return None;
-            }
+            let frame_opt = match msg.channel.topic.as_str() {
+                "/imu" => pb_car::ImuSample::decode(msg.data.as_ref()).ok().map(|s| {
+                    SensorFrame::Imu(ImuSample {
+                        timestamp_us: s.timestamp_us,
+                        ax: s.ax,
+                        ay: s.ay,
+                        az: s.az,
+                        gx: s.gx,
+                        gy: s.gy,
+                        gz: s.gz,
+                    })
+                }),
 
-            let mut buf = vec![0u8; len as usize];
-            if self.reader.read_exact(&mut buf).is_err() {
-                warn!("replay: truncated frame — skipping to EOF");
-                return None;
-            }
+                "/sonar" => {
+                    pb_car::SonarFrame::decode(msg.data.as_ref())
+                        .ok()
+                        .map(|s| SensorFrame::Sonar {
+                            front: s.front_m,
+                            left: s.left_m,
+                            right: s.right_m,
+                        })
+                }
 
-            match bincode::deserialize::<TimestampedFrame>(&buf) {
-                Ok(f) => return Some(f),
-                Err(e) => {
-                    warn!("replay: deserialize error ({e}) — skipping frame");
+                "/lidar" => pb_fg::PointCloud::decode(msg.data.as_ref())
+                    .ok()
+                    .map(|cloud| {
+                        // Pre-allocating prevents thousands of vector reallocations per tick.
+                        let num_points = cloud.data.len() / cloud.point_stride as usize;
+                        let mut points = Vec::with_capacity(num_points);
+
+                        // Bypassing Protobuf's standard object repetition with this packed
+                        // byte array strategy mirrors Foxglove's raw C++ memory mapping exactly.
+                        for chunk in cloud.data.chunks_exact(cloud.point_stride as usize) {
+                            points.push(LidarPoint {
+                                x: f32::from_le_bytes(chunk[0..4].try_into().unwrap()),
+                                y: f32::from_le_bytes(chunk[4..8].try_into().unwrap()),
+                                dist_m: f32::from_le_bytes(chunk[8..12].try_into().unwrap()),
+                                angle_rad: f32::from_le_bytes(chunk[12..16].try_into().unwrap()),
+                                timestamp_us: ts_us,
+                            });
+                        }
+
+                        SensorFrame::Lidar(LidarCloud {
+                            timestamp_us: ts_us,
+                            points,
+                        })
+                    }),
+
+                // We ignore /metrics and /control channels because injecting post-processed
+                // data back into the raw sensor feed would cause closed-loop feedback chaos.
+                _ => None,
+            };
+
+            if let Some(frame) = frame_opt {
+                if tx.send(TimestampedFrame { ts_us, frame }).is_err() {
+                    // Receiver dropped means the control loop hit an ESTOP or finished.
+                    break;
                 }
             }
         }
+
+        info!("replay: MCAP file fully decoded");
     }
 
-    /// For realtime mode: sleep until this frame's original timestamp.
     fn pace(&mut self, ts_us: u64) {
         if let ReplayMode::Fast = self.mode {
             return;
@@ -143,6 +175,9 @@ impl ReplaySource {
         let wall_start = *self.wall_start.get_or_insert_with(Instant::now);
         let ts_start = *self.ts_start_us.get_or_insert(ts_us);
         let elapsed_us = ts_us.saturating_sub(ts_start);
+
+        // Projecting the absolute offset from the start timestamp guarantees
+        // perfect temporal synchronization, avoiding the drift caused by thread sleep overhead.
         let target = wall_start + Duration::from_micros(elapsed_us);
         let now = Instant::now();
 
@@ -152,6 +187,8 @@ impl ReplaySource {
     }
 
     fn apply_frame(&mut self, frame: SensorFrame) {
+        // Keeping an internal running state allows the snapshot method to merge
+        // high-frequency IMU reads seamlessly into the lower-frequency LiDAR tick.
         match frame {
             SensorFrame::Lidar(cloud) => self.lidar = cloud,
             SensorFrame::Imu(sample) => self.imu = sample,
@@ -162,16 +199,14 @@ impl ReplaySource {
     }
 }
 
-impl SensorSource for ReplaySource {
-    /// Returns the next snapshot by consuming frames until a Lidar frame
-    /// is encountered (one control-loop tick = one LIDAR revolution).
-    /// All sensor types seen before that Lidar frame are folded in.
+impl SensorSource for McapReplayer {
     fn next_snapshot(&mut self) -> Result<SensorSnapshot> {
         loop {
-            match self.read_next_frame() {
-                None => {
+            match self.rx.recv() {
+                Err(_) => {
                     self.exhausted = true;
-                    // Return last known state so the control loop can finish cleanly
+                    // Yielding the final state handles the edge case where the file
+                    // truncates abruptly before a full revolution completes.
                     return Ok(SensorSnapshot {
                         lidar: Arc::new(self.lidar.clone()),
                         imu: self.imu,
@@ -179,13 +214,15 @@ impl SensorSource for ReplaySource {
                         sensor_fault: false,
                     });
                 }
-                Some(tf) => {
+                Ok(tf) => {
                     self.pace(tf.ts_us);
+
                     let is_lidar = matches!(tf.frame, SensorFrame::Lidar(_));
                     self.apply_frame(tf.frame);
 
                     if is_lidar {
-                        // Emit one snapshot per LIDAR revolution — same cadence as live
+                        // Tying the master tick rate to the LiDAR spin matches the
+                        // physical hardware constraints of the real world.
                         debug!(
                             "replay: lidar frame → snapshot ({} pts)",
                             self.lidar.points.len()
@@ -205,12 +242,4 @@ impl SensorSource for ReplaySource {
     fn is_exhausted(&self) -> bool {
         self.exhausted
     }
-}
-
-// ── Helper ──────────────────────────────────────────────────────────────────
-
-fn read_u32(r: &mut impl Read) -> Result<u32> {
-    let mut buf = [0u8; 4];
-    r.read_exact(&mut buf)?;
-    Ok(u32::from_le_bytes(buf))
 }

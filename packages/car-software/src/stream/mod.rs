@@ -1,1 +1,1 @@
-pub mod streamer;
+pub mod foxglove;

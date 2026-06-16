@@ -23,9 +23,25 @@ const PWM_FREQ_HZ: f64 = 50.0;
 const PWM_PERIOD_US: f64 = 1_000_000.0 / PWM_FREQ_HZ; // 20 000 µs
 const PULSE_NEUTRAL_US: f64 = 1_500.0;
 const PULSE_RANGE_US: f64 = 500.0; // neutral ± this = full deflection
+const DEADBAND_US: f64 = 25.0; // 5% of 500µs
 
-pub const SERVO_MAX_RAD: f32 = 0.5; // ≈ ±28.6°
+pub const SERVO_MAX_RAD: f32 = 0.7; // ≈ ±40.2°
 pub const THROTTLE_MAX: f32 = 1.0;
+
+#[inline]
+fn throttle_to_pulse(throttle: f32) -> f64 {
+    let t = throttle.clamp(-1.0, 1.0) as f64;
+    if t == 0.0 {
+        return PULSE_NEUTRAL_US;
+    }
+    let raw = PULSE_NEUTRAL_US + t * PULSE_RANGE_US;
+    // Push values that land inside the deadband outward past the deadband edge
+    if t > 0.0 {
+        raw.max(PULSE_NEUTRAL_US + DEADBAND_US + 1.0)
+    } else {
+        raw.min(PULSE_NEUTRAL_US - DEADBAND_US - 1.0)
+    }
+}
 
 // ══════════════════════════════════════════════════════════════════════════
 //  RealActuator
@@ -62,8 +78,7 @@ mod real {
 
     impl ActuatorSink for RealActuator {
         fn set_throttle(&mut self, throttle: f32) -> Result<()> {
-            let t = throttle.clamp(-THROTTLE_MAX, THROTTLE_MAX) as f64;
-            Self::write(&self.esc, PULSE_NEUTRAL_US + t * PULSE_RANGE_US)
+            Self::write(&self.esc, throttle_to_pulse(throttle))
         }
 
         fn set_steering(&mut self, angle_rad: f32) -> Result<()> {

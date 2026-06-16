@@ -1,5 +1,11 @@
+pub mod control;
+pub mod fusion;
 pub mod hal;
 pub mod init;
+pub mod metrics;
+pub mod replay;
+pub mod sensors;
+pub mod sim;
 pub mod state;
 pub mod stream;
 pub mod types;
