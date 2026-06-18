@@ -1,1 +1,1 @@
-pub mod foxglove;
+pub mod foxglove_bridge;

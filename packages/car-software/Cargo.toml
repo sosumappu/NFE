@@ -17,6 +17,10 @@ path = "src/bin/diag.rs"
 
 # ── Dependencies ──────────────────────────────────────────────────────────
 
+[features]
+default = []
+prometheus = []
+
 [dependencies]
 mcap = "0.25.0"
 cmaes = "0.2.2"
@@ -54,6 +58,7 @@ bincode = "1"
 smallvec = { version = "1", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde-big-array = "0.5.1"
+toml = "0.8.19"
 
 # foxglove
 prost = "0.14.4"
