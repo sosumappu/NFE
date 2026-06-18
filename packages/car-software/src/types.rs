@@ -209,7 +209,7 @@ impl ImuBias {
             bax: sum_ax / n,
             bay: sum_ay / n,
             // WARN:needs to match the way we install the MPU on the car
-            baz: saz / n - GRAVITY_MS2,
+            baz: sum_az / n - GRAVITY_MS2,
             bgx: sum_gx / n,
             bgy: sum_gy / n,
             bgz: sum_gz / n,

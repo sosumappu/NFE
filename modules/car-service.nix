@@ -12,6 +12,13 @@
       description = "The car control binary package";
     };
 
+    requireStartGate = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = "if true, services requires /run/car/START to exist
+            before running";
+    };
+
     logRingBufferSize = lib.mkOption {
       type = lib.types.str;
       default = "10M";
@@ -51,7 +58,10 @@
       description = "Autonomous RC car control loop";
       documentation = ["https://github.com/sosumappu/nfe"];
 
-      wantedBy = ["multi-user.target"];
+      wantedBy =
+        if config.services.car.requireStartGate
+        then []
+        else ["multi-user.target"];
       after = ["network.target" "systemd-udevd.service"];
       requires = ["systemd-udevd.service"];
 

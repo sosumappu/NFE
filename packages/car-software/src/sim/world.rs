@@ -4,7 +4,8 @@ use serde::Deserialize;
 /// Loaded from a JSON file produced by your coworker's Python map tool:
 ///
 ///   {
-///     "walls":     [[x1,y1,x2,y2], ...],
+///     "inner_walls":     [[x1,y1], ...],
+///     "outer_walls":     [[x1,y1], ...],
 ///     "start":     {"x": 0.0, "y": 0.0, "yaw_rad": 0.0},
 ///     "waypoints": [[x,y], ...]   // optional, for lap timing
 ///   }
@@ -57,7 +58,8 @@ pub struct StartPose {
 
 #[derive(Debug, Clone)]
 pub struct World {
-    pub walls: Vec<Seg>,
+    pub inner_walls: Vec<Seg>,
+    pub outer_walls: Vec<Seg>,
     pub start: StartPose,
     /// Lap waypoints — (x, y) in world frame, used for progress / cost
     pub waypoints: Vec<(f32, f32)>,
@@ -67,7 +69,8 @@ pub struct World {
 
 #[derive(Deserialize)]
 struct JsonWorld {
-    walls: Vec<[f32; 4]>,
+    inner_walls: Vec<[f32; 2]>,
+    outer_walls: Vec<[f32; 2]>,
     start: JsonStart,
     #[serde(default)]
     waypoints: Vec<[f32; 2]>,
@@ -80,21 +83,30 @@ struct JsonStart {
     yaw_rad: f32,
 }
 
+#[inline]
+fn loop_to_segs(points: &[[f32; 2]]) -> Vec<Seg> {
+    let n = points.len();
+    (0..n)
+        .map(|i| {
+            let a = points[i];
+            let b = points[(i + 1) % n];
+            Seg {
+                ax: a[0],
+                ay: a[1],
+                bx: b[0],
+                by: b[1],
+            }
+        })
+        .collect()
+}
+
 impl World {
     pub fn load(path: impl AsRef<Path>) -> anyhow::Result<Self> {
         let raw = fs::read_to_string(&path)?;
         let jw: JsonWorld = serde_json::from_str(&raw)?;
         Ok(Self {
-            walls: jw
-                .walls
-                .iter()
-                .map(|w| Seg {
-                    ax: w[0],
-                    ay: w[1],
-                    bx: w[2],
-                    by: w[3],
-                })
-                .collect(),
+            inner_walls: loop_to_segs(&jw.inner_wall),
+            outer_walls: loop_to_segs(&jw.inner_wall),
             start: StartPose {
                 x: jw.start.x,
                 y: jw.start.y,
@@ -109,12 +121,28 @@ impl World {
     #[inline]
     pub fn raycast(&self, wx: f32, wy: f32, angle_rad: f32, max_dist: f32) -> f32 {
         let (s, c) = angle_rad.sin_cos();
-        self.walls
+        self.inner_walls
+            .iter()
+            .chain(self.outer_walls.iter())
+            .map(|seg| seg.ray_intersect(wx, wy, c, s))
+            .fold(max_dist, f32::min)
+    }
+
+    pub fn raycast_inner(&self, wx: f32, wy: f32, angle_rad: f32, max_dist: f32) -> f32 {
+        let (s, c) = angle_rad.sin_cos();
+        self.inner_walls
             .iter()
             .map(|seg| seg.ray_intersect(wx, wy, c, s))
             .fold(max_dist, f32::min)
     }
 
+    pub fn raycast_outer(&self, wx: f32, wy: f32, angle_rad: f32, max_dist: f32) -> f32 {
+        let (s, c) = angle_rad.sin_cos();
+        self.outer_walls
+            .iter()
+            .map(|seg| seg.ray_intersect(wx, wy, c, s))
+            .fold(max_dist, f32::min)
+    }
     /// Index of the next waypoint ahead of `pos`, or None if list is empty.
     pub fn next_waypoint(&self, pos: (f32, f32), last_reached: usize) -> Option<usize> {
         if self.waypoints.is_empty() {

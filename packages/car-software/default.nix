@@ -5,10 +5,11 @@
   pkg-config,
   systemd, # libsystemd (sd_notify, watchdog)
   libudev-zero, # udev shim — lighter than full systemd for cross builds
+  fontconfig,
 }:
 rustPlatform.buildRustPackage {
   pname = "car-software";
-  version = "0.1.0";
+  version = "0.1.1";
 
   # Source is the package directory itself
   src = ./.;
@@ -19,13 +20,14 @@ rustPlatform.buildRustPackage {
   # Build both binaries defined in Cargo.toml:
   #   [[bin]] name = "car"      → $out/bin/car
   #   [[bin]] name = "car-diag" → $out/bin/car-diag
+  #   [[bin]] name = "car-tune" → $out/bin/car-tune
   cargoBuildFlags = ["--bins"];
 
   # pkg-config resolves libsystemd headers during build
   nativeBuildInputs = [pkg-config];
 
   # Runtime link dependencies
-  buildInputs = [systemd];
+  buildInputs = [systemd fontconfig];
 
   # ── Release profile ────────────────────────────────────────────
   # Matches [profile.release] in Cargo.toml:
@@ -40,11 +42,12 @@ rustPlatform.buildRustPackage {
       # Cross-strip: use the target strip, not the build-host one
       $STRIP $out/bin/car
       $STRIP $out/bin/car-diag
+      $STRIP $out/bin/car-tune
     ''}
   '';
 
   meta = {
-    description = "NFE autonomous RC car control loop (PREEMPT_RT / Tokio)";
+    description = "NeverFastEnough car control and optimization package";
     homepage = "https://github.com/sosumappu/nfe";
     license = lib.licenses.mit;
     platforms = ["aarch64-linux"];

@@ -13,6 +13,7 @@ use std::{
 use anyhow::{Context, Result};
 use tracing::{debug, info, warn};
 
+use memmap2::MmapOptions;
 use prost::Message;
 
 use crate::hal::{SensorFrame, SensorSource, TimestampedFrame};
@@ -54,7 +55,6 @@ impl McapReplayer {
         let path = path.as_ref().to_owned();
         let file = File::open(&path)
             .with_context(|| format!("cannot open replay file: {}", path.display()))?;
-        let reader = BufReader::new(file);
 
         // A bounded channel enforces backpressure so the pre-fetch thread doesn't
         // gorge the RAM if we are stepping through the replay slowly.
@@ -62,7 +62,7 @@ impl McapReplayer {
 
         std::thread::Builder::new()
             .name("mcap-decoder".into())
-            .spawn(move || Self::decode_worker(reader, tx))
+            .spawn(move || Self::decode_worker(file, tx))
             .context("failed to spawn mcap-decoder thread")?;
 
         info!("replay: opened {} in {:?} mode", path.display(), mode);
@@ -79,8 +79,14 @@ impl McapReplayer {
         })
     }
 
-    fn decode_worker(reader: BufReader<File>, tx: mpsc::SyncSender<TimestampedFrame>) {
-        let messages = match mcap::MessageStream::new(reader) {
+    fn decode_worker(file: File, tx: mpsc::SyncSender<TimestampedFrame>) {
+        let mmap = unsafe {
+            MmapOptions::new()
+                .map(&file)
+                .expect("failed to memory map mcap file")
+        };
+
+        let messages = match mcap::MessageStream::new(&mmap) {
             Ok(s) => s,
             Err(e) => {
                 warn!("replay: MCAP init failure — terminating pre-fetch ({e})");

@@ -11,6 +11,9 @@ fn main() {
     config.file_descriptor_set_path(out_dir.join("messages_descriptor.bin"));
 
     config
-        .compile_protos(&["proto/messages.proto"], &["proto/"])
+        .compile_protos(
+            &["proto/car_software.proto", "proto/foxglove.proto"],
+            &["proto/"],
+        )
         .unwrap();
 }

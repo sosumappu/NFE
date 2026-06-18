@@ -127,35 +127,31 @@ fn mcap_loop(mut file_writer: BufWriter<File>, rx: mpsc::Receiver<McapMessage>, 
     let descriptor_bytes = include_bytes!(concat!(env!("OUT_DIR"), "/messages_descriptor.bin"));
 
     // Helper closure to register channels easily
-    let mut register = |topic: &str, message_name: &str| -> Arc<Channel> {
+    let mut register = |id: u16, topic: &str, message_name: &str| -> u16 {
         let schema = Arc::new(Schema {
+            id,
             name: message_name.to_string(),
             encoding: "protobuf".to_string(),
-            data: descriptor_bytes.to_vec(),
+            data: descriptor_bytes.to_vec().into(),
         });
 
         writer
-            .add_channel(&Channel {
-                topic: topic.to_string(),
-                schema: Some(schema),
-                message_encoding: "protobuf".to_string(),
-                metadata: Default::default(),
-            })
+            .add_channel(schema.id, topic, "protobuf", &Default::default())
             .expect("failed to add channel")
     };
 
     // Register all channels with their fully qualified protobuf names
-    let ch_imu = register("/imu", "car_software.ImuSample");
-    let ch_lidar = register("/lidar", "foxglove.PointCloud");
-    let ch_sonar = register("/sonar", "car_software.SonarFrame");
-    let ch_metrics = register("/metrics", "car_software.TickMetrics");
-    let ch_control = register("/control", "car_software.ControlFrame");
+    let ch_imu = register(0, "/imu", "car_software.ImuSample");
+    let ch_lidar = register(1, "/lidar", "foxglove.PointCloud");
+    let ch_sonar = register(2, "/sonar", "car_software.SonarFrame");
+    let ch_metrics = register(3, "/metrics", "car_software.TickMetrics");
+    let ch_control = register(4, "/control", "car_software.ControlFrame");
 
     let mut frames = 0u64;
     let mut last_log = Instant::now();
 
     for msg in &rx {
-        let (channel, ts_us, payload) = match &msg {
+        let (id, ts_us, payload) = match &msg {
             McapMessage::Sensor(tf) => match &tf.frame {
                 crate::hal::SensorFrame::Imu(s) => {
                     let pb_msg = pb_car::ImuSample {
@@ -167,7 +163,7 @@ fn mcap_loop(mut file_writer: BufWriter<File>, rx: mpsc::Receiver<McapMessage>, 
                         gy: s.gy,
                         gz: s.gz,
                     };
-                    (ch_imu.clone(), tf.ts_us, pb_msg.encode_to_vec())
+                    (ch_imu, tf.ts_us, pb_msg.encode_to_vec())
                 }
                 crate::hal::SensorFrame::Lidar(cloud) => {
                     let point_stride = 16; // 4 f32s * 4 bytes each
@@ -211,7 +207,7 @@ fn mcap_loop(mut file_writer: BufWriter<File>, rx: mpsc::Receiver<McapMessage>, 
                         ],
                         data,
                     };
-                    (ch_lidar.clone(), tf.ts_us, pb_msg.encode_to_vec())
+                    (ch_lidar, tf.ts_us, pb_msg.encode_to_vec())
                 }
                 crate::hal::SensorFrame::Sonar { front, left, right } => {
                     let pb_msg = pb_car::SonarFrame {
@@ -220,14 +216,14 @@ fn mcap_loop(mut file_writer: BufWriter<File>, rx: mpsc::Receiver<McapMessage>, 
                         left_m: *left,
                         right_m: *right,
                     };
-                    (ch_sonar.clone(), tf.ts_us, pb_msg.encode_to_vec())
+                    (ch_sonar, tf.ts_us, pb_msg.encode_to_vec())
                 }
             },
             McapMessage::Metrics(m) => {
                 let pb_msg = pb_car::TickMetrics {
                     tick: m.tick,
                     timestamp_us: m.timestamp_us,
-                    loop_us: m.loop_us,
+                    loop_us: m.loop_us as u64,
                     lateral_error_m: m.lateral_error_m,
                     heading_error_rad: m.heading_error_rad,
                     steering_rad: m.steering_rad,
@@ -240,7 +236,7 @@ fn mcap_loop(mut file_writer: BufWriter<File>, rx: mpsc::Receiver<McapMessage>, 
                     estop: m.estop,
                     watchdog_miss: m.watchdog_miss,
                 };
-                (ch_metrics.clone(), m.timestamp_us, pb_msg.encode_to_vec())
+                (ch_metrics, m.timestamp_us, pb_msg.encode_to_vec())
             }
             McapMessage::Control(c) => {
                 let pb_msg = pb_car::ControlFrame {
@@ -250,7 +246,7 @@ fn mcap_loop(mut file_writer: BufWriter<File>, rx: mpsc::Receiver<McapMessage>, 
                     target_speed: c.target_speed,
                     current_speed: c.current_speed,
                 };
-                (ch_control.clone(), c.timestamp_us, pb_msg.encode_to_vec())
+                (ch_control, c.timestamp_us, pb_msg.encode_to_vec())
             }
         };
 
@@ -259,7 +255,7 @@ fn mcap_loop(mut file_writer: BufWriter<File>, rx: mpsc::Receiver<McapMessage>, 
         writer
             .write_to_known_channel(
                 &MessageHeader {
-                    channel_id: channel.id,
+                    channel_id: id,
                     sequence: 0,
                     log_time: ts_ns as u64,
                     publish_time: ts_ns as u64,

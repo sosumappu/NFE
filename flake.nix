@@ -140,6 +140,7 @@
             deploy-rs.packages.${system}.default
             fenix.packages.${system}.stable.toolchain
             pkg-config
+            protobuf
           ]
           ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
             rt-tests

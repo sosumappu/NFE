@@ -161,7 +161,7 @@ fn run_episode(
         speed::SpeedPlanner,
     };
     use car::fusion::kinematics::Kinematics;
-    use car::hal::SensorSource;
+    use car::hal::{ActuatorSink, SensorSource};
     use car::metrics::{MetricsLog, TickMetrics};
     use car::sim::{
         model::{DynamicBicycle, IdentifiedModel, KinematicBicycle},
@@ -194,6 +194,8 @@ fn run_episode(
         bax: 0.0,
         bay: 0.0,
         baz: 0.0,
+        bgx: 0.0,
+        bgy: 0.0,
         bgz: 0.0,
     };
     let mut kin = Kinematics::new(500, bias);
@@ -285,10 +287,6 @@ fn main() -> Result<()> {
     );
 
     // ── CMA-ES loop ─────────────────────────────────────────────────────
-    // Uses the `cmaes` crate interface.  Add to Cargo.toml:
-    //   [dependencies]
-    //   cmaes = "0.3"
-    //
     // The closure captures world, args by reference.
     let objective = |x: &[f64]| -> f64 {
         let p = TuningParams::from_slice(x).clamp();
@@ -302,26 +300,26 @@ fn main() -> Result<()> {
         ) as f64
     };
 
-    // -- UNCOMMENT WHEN cmaes IS IN Cargo.toml --
-    // use cmaes::{CMAESOptions, ObjectiveFunction};
-    // let mut cma = CMAESOptions::new(x0, sigma0)
-    //     .max_generations(args.max_gen)
-    //     .build(objective)?;
-    // let result = cma.run();
-    // let best = TuningParams::from_slice(&result.best_individual.point).clamp();
-    // println!("car-tune: converged  cost={:.4}", result.best_individual.value);
-    // println!("{best:#?}");
-    // let json = serde_json::to_string_pretty(&best)?;
-    // std::fs::write(&args.out, &json)?;
-    // println!("car-tune: best params written to {}", args.out.display());
+    use cmaes::{CMAESOptions, ObjectiveFunction};
+    let mut cma = CMAESOptions::new(x0, sigma0)
+        .max_generations(args.max_gen)
+        .build(objective)?;
+    let result = cma.run();
+    let best = TuningParams::from_slice(&result.best_individual.point).clamp();
+    println!(
+        "car-tune: converged  cost={:.4}",
+        result.best_individual.value
+    );
+    println!("{best:#?}");
+    let json = serde_json::to_string_pretty(&best)?;
+    std::fs::write(&args.out, &json)?;
+    println!("car-tune: best params written to {}", args.out.display());
 
     // Placeholder: single evaluation to verify the pipeline compiles
     println!("car-tune: running single evaluation to validate pipeline...");
     let cost = objective(&x0);
     println!("car-tune: initial cost = {cost:.4}");
     println!();
-    println!("car-tune: to enable CMA-ES add `cmaes = \"0.3\"` to Cargo.toml");
-    println!("          then uncomment the block above.");
 
     Ok(())
 }

@@ -14,52 +14,39 @@ path = "src/main.rs"
 name = "car-diag"
 path = "src/bin/diag.rs"
 
+[[bin]]
+name = "car-tune"
+path = "src/bin/tune.rs"
+
 
 # ── Dependencies ──────────────────────────────────────────────────────────
 
 [dependencies]
 mcap = "0.25.0"
 cmaes = "0.2.2"
-# Async runtime
 tokio = { version = "1", features = ["rt", "time", "sync", "macros", "signal"] }
-
-# Structured logging
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-tracing-journald = "0.3"
-
-# GPIO, I2C, hardware PWM — gated behind cfg(target_os = "linux")
-rppal = "0.22.1"
-
-# Serial port for LIDAR UART
 serialport = "4.9.0"
-
-# Avoid clone the lidar cloud
 arc-swap = "1.9.1"
-
-# Fast non-poisoning RwLock
 parking_lot = "0.12.5"
-
-# systemd sd_notify + watchdog
-libsystemd = "0.7"
-
-# mlockall
-libc = "0.2"
-
-# Error handling
 anyhow = "1.0.102"
-
-# Serialization — used for replay frames and UDP stream frames
 bincode = "1"
 smallvec = { version = "1", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
+serde_json = "1.0.150"
 serde-big-array = "0.5.1"
-
-# foxglove
 prost = "0.14.4"
 prost-types = "0.14.4"
-
 foxglove-ws = "0.2.2"
+memmap2 = "0.9.10"
+toml = "0.8"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rppal = "0.22.1"
+libsystemd = "0.7"
+libc = "0.2"
+tracing-journald = "0.3"
 
 [build-dependencies]
 prost-build = "0.14.4"

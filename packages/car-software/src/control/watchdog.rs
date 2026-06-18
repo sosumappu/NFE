@@ -1,3 +1,5 @@
+#[cfg(target_os = "linux")]
+use libsystemd::daemon::{self, NotifyState};
 /// control/watchdog.rs — software watchdog for the control loop
 ///
 /// The control loop calls `kick()` every tick.
@@ -6,10 +8,8 @@
 ///
 /// Additionally, `kick()` calls sd_notify(WATCHDOG=1) so systemd's WatchdogSec=5s
 /// timer is reset.  If the process hangs entirely, systemd will restart it.
-
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
-use libsystemd::daemon::{self, NotifyState};
 
 pub const WATCHDOG_MAX_MISSED: u32 = 3;
 
@@ -19,12 +19,15 @@ pub struct Watchdog {
 
 impl Watchdog {
     pub fn new() -> Self {
-        Self { missed: Arc::new(AtomicU32::new(0)) }
+        Self {
+            missed: Arc::new(AtomicU32::new(0)),
+        }
     }
 
     /// Appeler a chaque tick reussi
     pub fn kick(&self) {
         self.missed.store(0, Ordering::Relaxed);
+        #[cfg(target_os = "linux")]
         let _ = daemon::notify(false, &[NotifyState::Watchdog]);
     }
 

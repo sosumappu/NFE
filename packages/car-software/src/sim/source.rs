@@ -100,7 +100,7 @@ impl SimulatorSource {
 
     // ── Synthetic sensors ──────────────────────────────────────────────────
 
-    fn synthesize_lidar(&self) -> LidarCloud {
+    fn synthesize_lidar(&mut self) -> LidarCloud {
         let mut points = Vec::with_capacity(144);
         let ts = self.sim_us;
 
@@ -147,7 +147,7 @@ impl SimulatorSource {
         }
     }
 
-    fn synthesize_sonar(&self) -> [f32; 3] {
+    fn synthesize_sonar(&mut self) -> [f32; 3] {
         SONAR_DIRECTIONS.map(|rel_angle| {
             let world_angle = self.state.yaw_rad + rel_angle;
             let d = self
@@ -157,7 +157,7 @@ impl SimulatorSource {
         })
     }
 
-    fn synthesize_imu(&self) -> ImuSample {
+    fn synthesize_imu(&mut self) -> ImuSample {
         // az ≈ 9.81 (flat), gz from yaw_rate
         ImuSample {
             ax: self.noise.imu_accel(0.0),

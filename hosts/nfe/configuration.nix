@@ -147,6 +147,7 @@
   services.car = {
     enable = true;
     package = pkgs.car-software;
+    requireStateGate = true;
   };
 
   environment.systemPackages = with pkgs; [

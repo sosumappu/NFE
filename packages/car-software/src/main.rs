@@ -27,6 +27,7 @@ mod types;
 use std::sync::Arc;
 
 use anyhow::Result;
+#[cfg(target_os = "linux")]
 use libsystemd::daemon::{self, NotifyState};
 use tokio::{
     runtime::Builder,
@@ -49,8 +50,8 @@ use init::{ReadinessBarrier, ReadySignal, Sensor};
 use metrics::{MetricsLog, TickMetrics};
 use replay::{
     live_source::LiveSensorSource,
-    mcap_recorder::{ControlFrame, McapMessage, McapRecorder},
-    mcap_replayer::{McapReplayer, ReplayMode},
+    recorder::{ControlFrame, McapMessage, McapRecorder},
+    replayer::{McapReplayer, ReplayMode},
 };
 use sensors::factory::{SensorFactory, SensorReadySignals};
 use sim::{
@@ -214,10 +215,12 @@ async fn run_live(args: Args) -> Result<()> {
 
     if let Err(e) = barrier.wait_all_ready(INIT_TIMEOUT).await {
         error!("live: INIT FAILED — {e}");
+        #[cfg(target_os = "linux")]
         let _ = daemon::notify(false, &[NotifyState::Other("STATUS=init failed".into())]);
         std::process::exit(1);
     }
 
+    #[cfg(target_os = "linux")]
     let _ = daemon::notify(false, &[NotifyState::Ready]);
     info!("live: all sensors ready — starting control loop");
 
@@ -507,7 +510,7 @@ async fn control_loop(
                 target_speed: v_target,
                 current_speed: v_current,
             }));
-            send_metrics(tx, m);
+            send_metrics(&mcap_tx, m);
         }
 
         tick += 1;
@@ -552,11 +555,13 @@ fn init_tracing() -> Result<()> {
         tracing_subscriber::EnvFilter::from_env("RUST_LOG")
             .add_directive("car=debug".parse().unwrap()),
     );
+
+    #[cfg(target_os = "linux")]
     if std::env::var("JOURNAL_STREAM").is_ok() {
         let jd = tracing_journald::layer()?;
         tracing::subscriber::set_global_default(tracing_subscriber::registry().with(fmt).with(jd))?;
-    } else {
-        tracing::subscriber::set_global_default(tracing_subscriber::registry().with(fmt))?;
+        return Ok(());
     }
+    tracing::subscriber::set_global_default(tracing_subscriber::registry().with(fmt))?;
     Ok(())
 }

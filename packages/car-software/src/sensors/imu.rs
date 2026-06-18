@@ -1,3 +1,4 @@
+#![cfg(target_os = "linux")]
 /// sensors/imu.rs — IMU reader thread (I2C, MPU-6050 / MPU-6500 compatible)
 ///
 /// Spawns a dedicated OS thread that:
@@ -15,9 +16,9 @@ use std::{
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
+use tracing::{error, info, warn};
 
 use rppal::i2c::I2c;
-use tracing::{error, info, warn};
 
 use crate::init::ReadySignal;
 use crate::state::SensorStateWriter;
