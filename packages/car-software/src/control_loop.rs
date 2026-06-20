@@ -129,6 +129,18 @@ pub async fn run(
             0
         };
 
+        let imu_age_ms: u64 = if state.is_some() {
+            let now = monotonic_us();
+            now.saturating_sub(snap.imu.timestamp_us)
+        } else {
+            0
+        };
+
+        let imu_stale = imu_age_ms > safety.imu_stale_ms;
+        if imu_stale {
+            warn!(age_ms = imu_age_ms, "car: IMU stale — degrading behaviour (no velocity trust, force creep)");
+        }
+
         let front_points = snap
             .lidar
             .points
