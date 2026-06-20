@@ -20,19 +20,52 @@ use std::sync::{
     Arc,
 };
 
+use std::fmt;
+
 use arc_swap::ArcSwap;
 use parking_lot::RwLock;
 
 use crate::types::{ImuSample, LidarCloud};
 
-// in state.rs
+// Sensor health struct: one flag per sensor (diagnostic only)
+#[derive(Debug)]
+pub struct SensorHealth {
+    pub lidar: AtomicBool,
+    pub imu: AtomicBool,
+    pub sonar: [AtomicBool; 3],
+}
+
+impl SensorHealth {
+    pub fn new() -> Self {
+        Self {
+            lidar: AtomicBool::new(false),
+            imu: AtomicBool::new(false),
+            sonar: [AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false)],
+        }
+    }
+}
+
+impl fmt::Display for SensorHealth {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "lidar={}, imu={}, sonar=[{},{},{}]",
+            self.lidar.load(Ordering::Relaxed),
+            self.imu.load(Ordering::Relaxed),
+            self.sonar[0].load(Ordering::Relaxed),
+            self.sonar[1].load(Ordering::Relaxed),
+            self.sonar[2].load(Ordering::Relaxed)
+        )
+    }
+}
+
+
 pub trait SensorStateWriter: Send + Sync + 'static {
     fn update_lidar(&self, cloud: LidarCloud);
     fn update_imu(&self, sample: ImuSample);
     fn update_sonar(&self, slot: usize, dist_m: f32);
     fn is_shutdown(&self) -> bool;
-    fn sensor_fault(&self) -> &AtomicBool;
-    // in state.rs, add to the trait:
+    fn sensor_health(&self) -> &SensorHealth;
     fn set_shutdown(&self);
 }
 
@@ -45,6 +78,7 @@ pub struct SensorSnapshot {
     /// distances in metres for [front, front-left, front-right]
     /// f32::MAX = no obstacle / out of range
     pub sonar_m: [f32; 3],
+    /// Any sensor fault flag (diagnostic): OR of per-sensor flags
     pub sensor_fault: bool,
 }
 
@@ -62,7 +96,7 @@ impl SensorSnapshot {
         }
         self.lidar
             .nearest_in_arc(0.0, 30.0) // ±30° front cone
-            .map_or(false, |p| p.dist_m < threshold_m)
+            .is_some_and(|p| p.dist_m < threshold_m)
     }
 }
 
@@ -73,25 +107,27 @@ pub struct SharedState {
     imu: RwLock<ImuSample>,
     /// f32::to_bits() stored atomically; index = SonarConfig::slot
     sonar_bits: [AtomicU32; 3],
-    pub sensor_fault: AtomicBool,
+    pub sensor_health: SensorHealth,
     pub shutdown: AtomicBool,
 }
 
 impl SensorStateWriter for SharedState {
     fn update_lidar(&self, cloud: LidarCloud) {
-        self.update_lidar(cloud);
+        // Call the inherent method to avoid recursively calling the trait
+        // implementation.
+        SharedState::update_lidar(self, cloud);
     }
     fn update_imu(&self, sample: ImuSample) {
-        self.update_imu(sample);
+        SharedState::update_imu(self, sample);
     }
     fn update_sonar(&self, slot: usize, dist_m: f32) {
-        self.update_sonar(slot, dist_m);
+        SharedState::update_sonar(self, slot, dist_m);
     }
     fn is_shutdown(&self) -> bool {
-        self.is_shutdown()
+        SharedState::is_shutdown(self)
     }
-    fn sensor_fault(&self) -> &AtomicBool {
-        &self.sensor_fault
+    fn sensor_health(&self) -> &SensorHealth {
+        &self.sensor_health
     }
     fn set_shutdown(&self) {
         self.shutdown.store(true, Ordering::Relaxed);
@@ -108,7 +144,7 @@ impl SharedState {
                 AtomicU32::new(f32::MAX.to_bits()),
                 AtomicU32::new(f32::MAX.to_bits()),
             ],
-            sensor_fault: AtomicBool::new(false),
+            sensor_health: SensorHealth::new(),
             shutdown: AtomicBool::new(false),
         })
     }
@@ -138,7 +174,11 @@ impl SharedState {
                 f32::from_bits(self.sonar_bits[1].load(Ordering::Relaxed)),
                 f32::from_bits(self.sonar_bits[2].load(Ordering::Relaxed)),
             ],
-            sensor_fault: self.sensor_fault.load(Ordering::Relaxed),
+            sensor_fault: (self.sensor_health.lidar.load(Ordering::Relaxed)
+                || self.sensor_health.imu.load(Ordering::Relaxed)
+                || self.sensor_health.sonar[0].load(Ordering::Relaxed)
+                || self.sensor_health.sonar[1].load(Ordering::Relaxed)
+                || self.sensor_health.sonar[2].load(Ordering::Relaxed)),
         }
     }
 

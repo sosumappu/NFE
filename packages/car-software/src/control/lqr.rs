@@ -34,6 +34,7 @@ impl LqrState {
         ]
     }
 }
+#[derive(Default)]
 pub struct Lqr {
     k: [f32; 4],
 }
@@ -58,5 +59,57 @@ impl Lqr {
     /// Pour tuner en realtime avec un UDP)
     pub fn set_gains(&mut self, k: [f32; 4]) {
         self.k = k;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn compute_equals_dot_and_clamped(
+            k in prop::collection::vec(-10f32..10f32, 4),
+            state_arr in prop::collection::vec(-100f32..100f32, 4)
+        ) {
+            let k_arr: [f32;4] = [k[0], k[1], k[2], k[3]];
+            let state = LqrState {
+                lateral_error_m: state_arr[0],
+                lateral_rate_m_s: state_arr[1],
+                heading_error_rad: state_arr[2],
+                yaw_rate_rad_s: state_arr[3],
+            };
+            let lqr = Lqr::new_with_gains(k_arr);
+            let dot: f32 = k_arr.iter().zip(state.as_array().iter()).map(|(a,b)| a*b).sum();
+            let expected = dot.clamp(-SERVO_MAX_RAD, SERVO_MAX_RAD);
+            let out = lqr.compute_lateral(&state);
+            prop_assert!( (out - expected).abs() <= 1e-6 );
+        }
+    }
+
+    #[test]
+    fn output_clamped_to_servo_range() {
+        let lqr = Lqr::new();
+        let extreme = LqrState {
+            lateral_error_m: 100.0,
+            lateral_rate_m_s: 100.0,
+            heading_error_rad: 100.0,
+            yaw_rate_rad_s: 100.0,
+        };
+        let steering = lqr.compute_lateral(&extreme);
+        assert!(steering.abs() <= SERVO_MAX_RAD);
+    }
+
+    #[test]
+    fn zero_state_gives_zero_steering() {
+        let lqr = Lqr::new();
+        let zero = LqrState {
+            lateral_error_m: 0.0,
+            lateral_rate_m_s: 0.0,
+            heading_error_rad: 0.0,
+            yaw_rate_rad_s: 0.0,
+        };
+        assert_eq!(lqr.compute_lateral(&zero), 0.0);
     }
 }

@@ -1,0 +1,54 @@
+[init]
+timeout_secs = 5
+
+[control]
+kinematics_horizon = 500
+hz = 100
+estop_dist_m = 0.30
+# [lat_err, later_rate, heading_err, yaw_rate]
+lqr = [0.80, 0.30, 1.20, 0.40]
+watchdog_max_missed = 3
+
+[control.speed]
+v_max = 1.0
+# greater = more speed linear k_dist * dist_to_waypoint
+k_dist = 1.0
+# greater = less speed 1 - k_heading * steering^2
+k_heading = 1.0
+
+[control.pid]
+kp = 1.5  # proportional factor
+ki = 0.05 # integral factor
+kd = 0.2  # derivative factor
+
+
+[live]
+lidar_port = "/dev/lidar"
+
+[safety]
+# wheelbase (m)
+wheelbase_m = 0.215
+# half-width of the collision channel (m)
+half_channel_w_m = 0.13
+# lookahead time (s)
+t_lookahead_s = 0.4
+# estop length limits (m)
+estop_min_m = 0.25
+estop_max_m = 1.5
+# arc curvature constant — controls parabola validity
+c_arc = 0.5
+# tan delta lower bound to avoid divide-by-zero
+tan_min = 0.0717
+# re-arm (clear) gap in metres
+rearm_gap_m = 0.20
+# number of consecutive clean ticks required to clear estop
+n_clean_ticks = 5
+# blind/backstop parameters (ms)
+min_front_points = 4
+lidar_stale_ms = 350
+blind_grace_ms = 350
+# IMU / Sonar staleness (ms)
+imu_stale_ms = 20
+sonar_stale_ms = 100
+# leaky-bucket escalate threshold
+escalate_at = 6

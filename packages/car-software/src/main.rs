@@ -10,12 +10,11 @@ fn main() -> Result<()> {
     info!("car: NFE starting");
 
     let config = bootstrap::initialize(&args);
-    let observability = observability::Observability::setup(&config)?;
 
     let rt = Builder::new_current_thread()
         .enable_time()
         .enable_io()
         .build()?;
 
-    rt.block_on(async move { modes::dispatch(args, config, observability).await })
+    rt.block_on(async move { modes::dispatch(args, config).await })
 }

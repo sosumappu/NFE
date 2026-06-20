@@ -26,8 +26,10 @@ use std::{
     io::{self, Read, Write},
     sync::Arc,
     thread,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
+
+use crate::time::monotonic_us;
 
 use tracing::{debug, error, info, warn};
 
@@ -189,13 +191,15 @@ fn run(state: Arc<dyn SensorStateWriter>, ready: ReadySignal, port_path: String)
                 if state.is_shutdown() {
                     break;
                 }
-                error!("lidar: {e} — retrying in 2s");
+                        error!("lidar: {e} — retrying in 2s");
                 state
-                    .sensor_fault()
+                    .sensor_health()
+                    .lidar
                     .store(true, std::sync::atomic::Ordering::Relaxed);
                 thread::sleep(Duration::from_secs(2));
                 state
-                    .sensor_fault()
+                    .sensor_health()
+                    .lidar
                     .store(false, std::sync::atomic::Ordering::Relaxed);
             }
         }
@@ -218,7 +222,7 @@ fn open_and_scan(
         .dtr_on_open(false)
         .timeout(Duration::from_millis(500))
         .open()
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        .map_err(|e| io::Error::other(e))?;
 
     thread::sleep(Duration::from_millis(300));
     let _ = port.clear(serialport::ClearBuffer::All);
@@ -296,10 +300,7 @@ fn open_and_scan(
         let dist_q2 = (buf[4] as u16) << 8 | buf[3] as u16;
         let dist_m = dist_q2 as f32 / 4000.0; // Q2 mm → metres
 
-        let timestamp_us = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_micros() as u64;
+        let timestamp_us = monotonic_us();
 
         debug!(
             "lidar sample: quality={} angle={:.2}° dist={:.3}m",
@@ -330,8 +331,8 @@ fn open_and_scan(
 
         prev_start = start_flag;
 
-        // Reject bad returns
-        if quality == 0 || dist_m < DIST_MIN_M || dist_m > DIST_MAX_M {
+        // Reject bad returns (keep only in-range distances)
+        if quality == 0 || !(DIST_MIN_M..=DIST_MAX_M).contains(&dist_m) {
             continue;
         }
 
@@ -382,10 +383,7 @@ fn publish_cloud(
         });
     }
 
-    let ts_us = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_micros() as u64;
+    let ts_us = monotonic_us();
 
     // Log front-bucket distance as a quick sanity proxy.
     // Bucket 0 is the first bucket whose centre is nearest to 0° (straight ahead).

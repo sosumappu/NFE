@@ -14,8 +14,10 @@
 use std::{
     sync::Arc,
     thread,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
+
+use crate::time::monotonic_us;
 use tracing::{error, info, warn};
 
 use rppal::i2c::I2c;
@@ -72,11 +74,13 @@ fn run(state: Arc<dyn SensorStateWriter>, ready: ReadySignal) {
             Err(e) => {
                 error!("imu: error — {e} — retrying in 1s");
                 state
-                    .sensor_fault()
+                    .sensor_health()
+                    .imu
                     .store(true, std::sync::atomic::Ordering::Relaxed);
                 thread::sleep(Duration::from_secs(1));
                 state
-                    .sensor_fault()
+                    .sensor_health()
+                    .imu
                     .store(false, std::sync::atomic::Ordering::Relaxed);
             }
         }
@@ -132,10 +136,7 @@ fn open_and_read(
         let gy_raw = i16::from_be_bytes([buf[10], buf[11]]);
         let gz_raw = i16::from_be_bytes([buf[12], buf[13]]);
 
-        let ts_us = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_micros() as u64;
+        let ts_us = monotonic_us();
 
         state.update_imu(ImuSample {
             ax: (ax_raw as f32 / ACCEL_SENSITIVITY) * G_TO_MS2,

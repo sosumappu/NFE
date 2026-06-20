@@ -39,7 +39,7 @@ impl Seg {
         let fy = self.ay - oy;
         let t = (fx * ey - fy * ex) / denom;
         let u = (fx * dy - fy * dx) / denom;
-        if t >= 0.0 && u >= 0.0 && u <= 1.0 {
+        if t >= 0.0 && (0.0..=1.0).contains(&u) {
             t
         } else {
             f32::MAX
@@ -105,8 +105,8 @@ impl World {
         let raw = fs::read_to_string(&path)?;
         let jw: JsonWorld = serde_json::from_str(&raw)?;
         Ok(Self {
-            inner_walls: loop_to_segs(&jw.inner_wall),
-            outer_walls: loop_to_segs(&jw.inner_wall),
+            inner_walls: loop_to_segs(&jw.inner_walls),
+            outer_walls: loop_to_segs(&jw.outer_walls),
             start: StartPose {
                 x: jw.start.x,
                 y: jw.start.y,
@@ -144,7 +144,7 @@ impl World {
             .fold(max_dist, f32::min)
     }
     /// Index of the next waypoint ahead of `pos`, or None if list is empty.
-    pub fn next_waypoint(&self, pos: (f32, f32), last_reached: usize) -> Option<usize> {
+    pub fn next_waypoint(&self, _pos: (f32, f32), last_reached: usize) -> Option<usize> {
         if self.waypoints.is_empty() {
             return None;
         }

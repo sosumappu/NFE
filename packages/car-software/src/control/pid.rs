@@ -54,3 +54,41 @@ impl Pid {
         self.prev_error = 0.0;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn integral_resets_on_sign_change() {
+        let mut pid = Pid::new_with_dt(1.0, 1.0, 0.0, 0.1);
+        pid.compute_longitudinal(1.0);
+        pid.compute_longitudinal(1.0);
+        let before = pid.compute_longitudinal(1.0); // integral has built up
+        let after_flip = pid.compute_longitudinal(-1.0); // sign change → reset
+                                                         // after_flip's contribution should NOT include the accumulated positive integral
+        assert!(after_flip < before);
+    }
+
+    #[test]
+    fn integral_respects_windup_limit() {
+        let mut pid = Pid::new_with_dt(0.0, 10.0, 0.0, 1.0); // pure I, dt=1s
+        for _ in 0..1000 {
+            pid.compute_longitudinal(1.0); // should saturate, not diverge
+        }
+        let out = pid.compute_longitudinal(1.0);
+        assert!(out <= 1.0); // output clamp from compute_longitudinal
+    }
+
+    #[test]
+    fn new_with_dt_sets_ki() {
+        let kp = 2.0_f32;
+        let ki = 0.42_f32;
+        let kd = 0.1_f32;
+        let dt = 0.02_f32;
+        let pid = Pid::new_with_dt(kp, ki, kd, dt);
+        assert!((pid.ki - ki).abs() < f32::EPSILON, "Pid.ki should match constructor arg");
+        assert!((pid.kp - kp).abs() < f32::EPSILON, "Pid.kp should match constructor arg");
+        assert!((pid.kd - kd).abs() < f32::EPSILON, "Pid.kd should match constructor arg");
+    }
+}

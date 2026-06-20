@@ -5,7 +5,6 @@ use crate::{
     cli::Args,
     config::Config,
     control_loop::{self, ControlLoopOptions},
-    observability::Observability,
     sim::{
         model::{DynamicBicycle, IdentifiedModel, KinematicBicycle, VehicleModel},
         source::SimulatorSource,
@@ -13,17 +12,13 @@ use crate::{
     },
 };
 
-pub async fn run(
-    world_path: String,
-    args: &Args,
-    config: &Config,
-    observability: &Observability,
-) -> Result<()> {
+pub async fn run(world_path: String, args: &Args, config: &Config) -> Result<()> {
     info!("sim: loading world from {world_path}");
     let world = World::load(&world_path)?;
     info!(
-        "sim: {} walls  {} waypoints  model={}",
-        world.walls.len(),
+        "sim: {} inner_walls {} outer_walls  {} waypoints  model={}",
+        world.inner_walls.len(),
+        world.outer_walls.len(),
         world.waypoints.len(),
         args.model
     );
@@ -41,13 +36,17 @@ pub async fn run(
     };
 
     let (source, actuator) = SimulatorSource::new(world, model, config.control_dt());
+
+    // No bus in sim: the tuner (bin/tune.rs) calls run_episode() directly and
+    // reads cost from MetricsLog::summarise(). Wiring a bus here would require
+    // a subscriber thread that immediately drops events, adding overhead to the
+    // tight CMA-ES evaluation loop for no benefit.
     control_loop::run(
         Box::new(source),
         Box::new(actuator),
         None,
         None,
         config,
-        observability,
         &ControlLoopOptions {
             cost_out: args.cost_out.clone(),
             csv_out: args.csv_out.clone(),

@@ -269,8 +269,9 @@ fn main() -> Result<()> {
     println!("car-tune: loading world from {}", args.world.display());
     let world = car::sim::world::World::load(&args.world)?;
     println!(
-        "car-tune: {} wall segments, {} waypoints",
-        world.walls.len(),
+        "car-tune: {} inner wall segments, {} outer wall segments, {} waypoints",
+        world.inner_walls.len(),
+        world.outer_walls.len(),
         world.waypoints.len()
     );
 
@@ -288,8 +289,8 @@ fn main() -> Result<()> {
 
     // ── CMA-ES loop ─────────────────────────────────────────────────────
     // The closure captures world, args by reference.
-    let objective = |x: &[f64]| -> f64 {
-        let p = TuningParams::from_slice(x).clamp();
+    let objective = |x: &cmaes::DVector<f64>| -> f64 {
+        let p = TuningParams::from_slice(x.as_slice()).clamp();
         run_episode(
             &world,
             &p,
@@ -303,23 +304,18 @@ fn main() -> Result<()> {
     use cmaes::{CMAESOptions, ObjectiveFunction};
     let mut cma = CMAESOptions::new(x0, sigma0)
         .max_generations(args.max_gen)
-        .build(objective)?;
+        .build(objective)
+        .map_err(|e| anyhow::anyhow!("CMA-ES build error: {:?}", e))?;
     let result = cma.run();
-    let best = TuningParams::from_slice(&result.best_individual.point).clamp();
-    println!(
-        "car-tune: converged  cost={:.4}",
-        result.best_individual.value
-    );
+    let best_sol = result
+        .overall_best
+        .expect("CMA-ES failed to find any valid solution");
+    let best = TuningParams::from_slice(best_sol.point.as_slice()).clamp();
+    println!("car-tune: converged  cost={:.4}", best_sol.value);
     println!("{best:#?}");
     let json = serde_json::to_string_pretty(&best)?;
     std::fs::write(&args.out, &json)?;
     println!("car-tune: best params written to {}", args.out.display());
-
-    // Placeholder: single evaluation to verify the pipeline compiles
-    println!("car-tune: running single evaluation to validate pipeline...");
-    let cost = objective(&x0);
-    println!("car-tune: initial cost = {cost:.4}");
-    println!();
 
     Ok(())
 }

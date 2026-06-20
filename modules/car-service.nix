@@ -87,7 +87,7 @@
         # ── Watchdog integration ──────────────────────────────────
         # systemd kills the service if it doesn't notify within 5s
         # The Rust watchdog calls sd_notify("WATCHDOG=1") each tick
-        WatchdogSec = "5s";
+        WatchdogSec = "2s";
         NotifyAccess = "main";
 
         # ── Logging ───────────────────────────────────────────────

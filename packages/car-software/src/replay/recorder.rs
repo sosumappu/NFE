@@ -1,8 +1,11 @@
 /// replay/recorder.rs — MCAP session recorder
 ///
 /// Writes sensor frames and control metrics to an MCAP file that Foxglove
-/// Studio opens natively. This version utilizes zero-copy binary Protobuf
-/// serialization for maximum performance.
+/// Studio opens natively. Receives all data through a TelemetryEvent channel
+/// rather than holding its own mpsc sender, because the TelemetryBus owns
+/// the channel lifetime — the recorder is just one subscriber among several.
+/// This means the recorder never needs to know about other consumers, and
+/// adding a new consumer never requires touching this file.
 ///
 /// Channel layout
 /// ──────────────
@@ -11,26 +14,20 @@
 ///   /sonar        car_software.SonarFrame      (Protobuf, ~33 Hz)
 ///   /metrics      car_software.TickMetrics     (Protobuf, 100 Hz)
 ///   /control      car_software.ControlFrame    (Protobuf, 100 Hz)
-///
-/// Foxglove panel suggestions
-/// ──────────────────────────
-///   3D panel     → /lidar (Will auto-detect foxglove.PointCloud)
-///   Plot panel   → /metrics.lateral_error_m, /control.steering_rad, etc.
-///   Raw messages → /imu, /sonar
-use std::{fs::File, io::BufWriter, path::Path, sync::mpsc, sync::Arc, thread, time::Instant};
+use std::{fs::File, io::BufWriter, path::Path, sync::mpsc, thread, time::Instant};
 
 use anyhow::{Context, Result};
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
-use mcap::{records::MessageHeader, Channel, Schema, Writer};
-use prost::Message; // Required for .encode_to_vec()
+use mcap::{records::MessageHeader, Writer};
+use prost::Message;
 
 use crate::hal::TimestampedFrame;
 use crate::metrics::TickMetrics;
+use crate::telemetry::TelemetryEvent;
 
 // ── Generated Protobuf Modules ─────────────────────────────────────────────
-// Depending on how prost-build is configured, it groups generated files
-// by their protobuf `package` name.
+
 pub mod pb_fg {
     include!(concat!(env!("OUT_DIR"), "/foxglove.rs"));
 }
@@ -40,7 +37,8 @@ pub mod pb_car {
 
 // ── Public Types ───────────────────────────────────────────────────────────
 
-/// Sent from the control loop each tick alongside the sensor frame
+/// Actuator commands recorded alongside sensor data so a replay session can
+/// reconstruct exactly what the controller decided on each tick.
 #[derive(Debug, Clone)]
 pub struct ControlFrame {
     pub timestamp_us: u64,
@@ -50,29 +48,21 @@ pub struct ControlFrame {
     pub current_speed: f32,
 }
 
-/// Everything the recorder thread needs per tick
-#[derive(Debug, Clone)]
-pub enum McapMessage {
-    Sensor(TimestampedFrame),
-    Metrics(Box<TickMetrics>),
-    Control(ControlFrame),
-}
-
 // ── Public Handle ──────────────────────────────────────────────────────────
 
 pub struct McapRecorder {
-    tx: Option<mpsc::SyncSender<McapMessage>>,
     handle: Option<thread::JoinHandle<()>>,
 }
 
 impl McapRecorder {
-    pub fn start(path: impl AsRef<Path>) -> Result<Self> {
+    /// Spawns the background writer thread. Takes ownership of `rx` so the
+    /// recorder's lifetime is tied to the channel — when the TelemetryBus
+    /// drops its sender the recorder drains remaining events and exits cleanly.
+    pub fn start(path: impl AsRef<Path>, rx: mpsc::Receiver<TelemetryEvent>) -> Result<Self> {
         let path = path.as_ref().to_owned();
         let file = File::create(&path)
             .with_context(|| format!("cannot create MCAP file: {}", path.display()))?;
         let writer = BufWriter::new(file);
-
-        let (tx, rx) = mpsc::sync_channel::<McapMessage>(2048);
         let path_str = path.display().to_string();
 
         let handle = thread::Builder::new()
@@ -82,19 +72,15 @@ impl McapRecorder {
 
         info!(path = %path.display(), "mcap-recorder: started");
         Ok(Self {
-            tx: Some(tx),
             handle: Some(handle),
         })
     }
 
-    pub fn sender(&self) -> mpsc::SyncSender<McapMessage> {
-        self.tx.as_ref().unwrap().clone()
-    }
-
+    /// Block until the background thread has flushed and closed the file.
+    /// Call this during shutdown rather than relying on Drop so you know the
+    /// file is complete before the process exits.
     pub fn finish(mut self) {
-        let tx = self.tx.take();
-        info!("mcap-recorder: closing channel");
-        drop(tx);
+        info!("mcap-recorder: waiting for thread to flush");
         if let Some(h) = self.handle.take() {
             match h.join() {
                 Ok(()) => info!("mcap-recorder: thread exited cleanly"),
@@ -106,11 +92,12 @@ impl McapRecorder {
 
 impl Drop for McapRecorder {
     fn drop(&mut self) {
-        if self.tx.is_some() {
-            warn!("mcap-recorder: Drop without finish() — draining");
-        }
-        self.tx.take();
+        // finish() is the clean path. If we reach Drop without it (e.g. on
+        // early error return), join anyway to avoid leaving a partially-written
+        // file with no footer — mcap::Writer::finish() writes the summary
+        // section that makes the file seekable in Foxglove Studio.
         if let Some(h) = self.handle.take() {
+            warn!("mcap-recorder: dropped without finish() — joining thread");
             let _ = h.join();
         }
     }
@@ -118,29 +105,31 @@ impl Drop for McapRecorder {
 
 // ── Background Thread ──────────────────────────────────────────────────────
 
-fn mcap_loop(mut file_writer: BufWriter<File>, rx: mpsc::Receiver<McapMessage>, path: String) {
+fn mcap_loop(mut file_writer: BufWriter<File>, rx: mpsc::Receiver<TelemetryEvent>, path: String) {
     info!(path = %path, "mcap-recorder: background thread started");
 
     let mut writer = Writer::new(&mut file_writer).expect("failed to init mcap writer");
 
-    // Load the FileDescriptorSet generated by build.rs so Foxglove can parse it
+    // The FileDescriptorSet lets Foxglove Studio decode our Protobuf messages
+    // without needing the .proto files at runtime. Generated by build.rs.
     let descriptor_bytes = include_bytes!(concat!(env!("OUT_DIR"), "/messages_descriptor.bin"));
 
-    // Helper closure to register channels easily
+    // Register all channels up front so the MCAP header lists them before any
+    // messages arrive — Foxglove Studio needs the schema before it can display
+    // a topic in the panel selector.
     let mut register = |id: u16, topic: &str, message_name: &str| -> u16 {
-        let schema = Arc::new(Schema {
+        use std::sync::Arc;
+        let schema = Arc::new(mcap::Schema {
             id,
             name: message_name.to_string(),
             encoding: "protobuf".to_string(),
             data: descriptor_bytes.to_vec().into(),
         });
-
         writer
             .add_channel(schema.id, topic, "protobuf", &Default::default())
             .expect("failed to add channel")
     };
 
-    // Register all channels with their fully qualified protobuf names
     let ch_imu = register(0, "/imu", "car_software.ImuSample");
     let ch_lidar = register(1, "/lidar", "foxglove.PointCloud");
     let ch_sonar = register(2, "/sonar", "car_software.SonarFrame");
@@ -150,11 +139,13 @@ fn mcap_loop(mut file_writer: BufWriter<File>, rx: mpsc::Receiver<McapMessage>, 
     let mut frames = 0u64;
     let mut last_log = Instant::now();
 
-    for msg in &rx {
-        let (id, ts_us, payload) = match &msg {
-            McapMessage::Sensor(tf) => match &tf.frame {
+    // The loop exits naturally when the TelemetryBus drops all senders,
+    // which happens when control_loop::run() returns and the bus is dropped.
+    for event in &rx {
+        let (id, ts_us, payload) = match &event {
+            TelemetryEvent::Sensor(tf) => match &tf.frame {
                 crate::hal::SensorFrame::Imu(s) => {
-                    let pb_msg = pb_car::ImuSample {
+                    let pb = pb_car::ImuSample {
                         timestamp_us: tf.ts_us,
                         ax: s.ax,
                         ay: s.ay,
@@ -163,23 +154,21 @@ fn mcap_loop(mut file_writer: BufWriter<File>, rx: mpsc::Receiver<McapMessage>, 
                         gy: s.gy,
                         gz: s.gz,
                     };
-                    (ch_imu, tf.ts_us, pb_msg.encode_to_vec())
+                    (ch_imu, tf.ts_us, pb.encode_to_vec())
                 }
                 crate::hal::SensorFrame::Lidar(cloud) => {
-                    let point_stride = 16; // 4 f32s * 4 bytes each
-
-                    // Pre-allocate the exact byte size needed
+                    let point_stride = 16u32;
                     let mut data = Vec::with_capacity(cloud.points.len() * point_stride as usize);
-
-                    // Zero-copy binary serialization
+                    // Pack as raw little-endian floats rather than protobuf repeated fields
+                    // so Foxglove Studio's 3D panel can interpret the bytes directly as
+                    // a GPU-ready vertex buffer without an extra decode step.
                     for p in &cloud.points {
                         data.extend_from_slice(&p.x.to_le_bytes());
                         data.extend_from_slice(&p.y.to_le_bytes());
                         data.extend_from_slice(&p.dist_m.to_le_bytes());
                         data.extend_from_slice(&p.angle_rad.to_le_bytes());
                     }
-
-                    let pb_msg = pb_fg::PointCloud {
+                    let pb = pb_fg::PointCloud {
                         timestamp: tf.ts_us,
                         frame_id: "lidar".into(),
                         point_stride,
@@ -188,7 +177,7 @@ fn mcap_loop(mut file_writer: BufWriter<File>, rx: mpsc::Receiver<McapMessage>, 
                                 name: "x".into(),
                                 offset: 0,
                                 r#type: 7,
-                            }, // 7 = FLOAT32
+                            },
                             pb_fg::PackedElementField {
                                 name: "y".into(),
                                 offset: 4,
@@ -207,20 +196,21 @@ fn mcap_loop(mut file_writer: BufWriter<File>, rx: mpsc::Receiver<McapMessage>, 
                         ],
                         data,
                     };
-                    (ch_lidar, tf.ts_us, pb_msg.encode_to_vec())
+                    (ch_lidar, tf.ts_us, pb.encode_to_vec())
                 }
                 crate::hal::SensorFrame::Sonar { front, left, right } => {
-                    let pb_msg = pb_car::SonarFrame {
+                    let pb = pb_car::SonarFrame {
                         timestamp_us: tf.ts_us,
                         front_m: *front,
                         left_m: *left,
                         right_m: *right,
                     };
-                    (ch_sonar, tf.ts_us, pb_msg.encode_to_vec())
+                    (ch_sonar, tf.ts_us, pb.encode_to_vec())
                 }
             },
-            McapMessage::Metrics(m) => {
-                let pb_msg = pb_car::TickMetrics {
+
+            TelemetryEvent::Metrics(m) => {
+                let pb = pb_car::TickMetrics {
                     tick: m.tick,
                     timestamp_us: m.timestamp_us,
                     loop_us: m.loop_us as u64,
@@ -236,29 +226,30 @@ fn mcap_loop(mut file_writer: BufWriter<File>, rx: mpsc::Receiver<McapMessage>, 
                     estop: m.estop,
                     watchdog_miss: m.watchdog_miss,
                 };
-                (ch_metrics, m.timestamp_us, pb_msg.encode_to_vec())
+                (ch_metrics, m.timestamp_us, pb.encode_to_vec())
             }
-            McapMessage::Control(c) => {
-                let pb_msg = pb_car::ControlFrame {
+
+            TelemetryEvent::Control(c) => {
+                let pb = pb_car::ControlFrame {
                     timestamp_us: c.timestamp_us,
                     steering_rad: c.steering_rad,
                     throttle: c.throttle,
                     target_speed: c.target_speed,
                     current_speed: c.current_speed,
                 };
-                (ch_control, c.timestamp_us, pb_msg.encode_to_vec())
+                (ch_control, c.timestamp_us, pb.encode_to_vec())
             }
         };
 
-        // Write to MCAP (MCAP timestamps are in nanoseconds)
-        let ts_ns = ts_us * 1000;
+        // MCAP timestamps are nanoseconds; our embedded timestamps are microseconds.
+        let ts_ns = ts_us * 1_000;
         writer
             .write_to_known_channel(
                 &MessageHeader {
                     channel_id: id,
                     sequence: 0,
-                    log_time: ts_ns as u64,
-                    publish_time: ts_ns as u64,
+                    log_time: ts_ns,
+                    publish_time: ts_ns,
                 },
                 &payload,
             )
@@ -272,6 +263,8 @@ fn mcap_loop(mut file_writer: BufWriter<File>, rx: mpsc::Receiver<McapMessage>, 
         }
     }
 
+    // finish() writes the MCAP summary and index sections. Without it the file
+    // is technically valid but Foxglove Studio cannot seek or display a timeline.
     writer.finish().expect("failed to cleanly finish mcap file");
     info!(path = %path, frames, "mcap-recorder: session complete");
 }

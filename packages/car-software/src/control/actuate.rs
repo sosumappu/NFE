@@ -167,7 +167,7 @@ impl LoggingActuator {
 
     fn should_log(&mut self) -> bool {
         self.call_count += 1;
-        self.call_count % self.log_every_n == 0
+        self.call_count.is_multiple_of(self.log_every_n)
     }
 }
 

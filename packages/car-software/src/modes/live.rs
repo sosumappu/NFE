@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use libsystemd::daemon::{self, NotifyState};
+#[cfg(target_os = "linux")]
+use libsystemd::daemon;
 use tracing::{error, info, warn};
 
 use crate::{
@@ -11,14 +12,14 @@ use crate::{
     control_loop::{self, ControlLoopOptions},
     hal::{ActuatorSink, SensorSource},
     init::{ReadinessBarrier, ReadySignal, Sensor},
-    observability::Observability,
     replay::{live_source::LiveSensorSource, recorder::McapRecorder},
     sensors::factory::{SensorFactory, SensorReadySignals},
     state::{SensorStateWriter, SharedState},
     stream::foxglove_bridge::FoxgloveBridge,
+    telemetry::TelemetryBus,
 };
 
-pub async fn run(args: Args, config: &Config, observability: &Observability) -> Result<()> {
+pub async fn run(args: Args, config: &Config) -> Result<()> {
     let state = SharedState::new();
     let (barrier, _signals) = ReadinessBarrier::new();
 
@@ -32,31 +33,35 @@ pub async fn run(args: Args, config: &Config, observability: &Observability) -> 
         ],
     };
 
-    let (recorder, mcap_tx): (Option<McapRecorder>, Option<_>) = if let Some(ref path) = args.record
-    {
-        match McapRecorder::start(path) {
+    // Build the bus before wiring any consumers so subscribe() calls happen
+    // before the control loop can call publish(). Subscribers registered after
+    // the first publish() would silently miss all earlier events.
+    let bus = TelemetryBus::new();
+
+    // MCAP recorder — subscribes first with a large buffer because disk I/O
+    // is bursty: a write syscall can stall for milliseconds, and the large
+    // buffer absorbs that without dropping frames from the control loop.
+    let recorder = if let Some(ref path) = args.record {
+        let rx = bus.subscribe(2048);
+        match McapRecorder::start(path, rx) {
             Ok(r) => {
-                let tx = r.sender();
                 info!("live: MCAP recording to {path}");
-                (Some(r), Some(tx))
+                Some(r)
             }
             Err(e) => {
                 warn!("live: MCAP recorder failed ({e:#}) — continuing without recording");
-                (None, None)
+                None
             }
         }
     } else {
-        (None, None)
+        None
     };
 
-    let state_writer: Arc<dyn SensorStateWriter> = state.clone();
-    let spawned = SensorFactory::spawn_all(&state_writer, config.live.lidar_port.clone(), signals);
-    if !spawned.skipped.is_empty() {
-        warn!("live: degraded sensors: {:?}", spawned.skipped);
-    }
-
+    // Foxglove bridge — subscribes after the recorder so its smaller buffer
+    // does not starve the recorder's channel during startup. The bridge polls
+    // every 50 ms and only needs the latest metrics, so 64 events is generous.
     let _bridge = if args.stream {
-        match FoxgloveBridge::start(state.clone(), args.stream_port, 50) {
+        match FoxgloveBridge::start(state.clone(), &bus, args.stream_port, 50).await {
             Ok(b) => {
                 info!("live: Foxglove bridge on ws://0.0.0.0:{}", args.stream_port);
                 Some(b)
@@ -70,13 +75,26 @@ pub async fn run(args: Args, config: &Config, observability: &Observability) -> 
         None
     };
 
+    let state_writer: Arc<dyn SensorStateWriter> = state.clone();
+    let spawned = SensorFactory::spawn_all(&state_writer, config.live.lidar_port.clone(), signals);
+    if !spawned.skipped.is_empty() {
+        warn!("live: degraded sensors: {:?}", spawned.skipped);
+    }
+
     if let Err(e) = barrier.wait_all_ready(config.init.timeout()).await {
         error!("live: INIT FAILED — {e}");
-        let _ = daemon::notify(false, &[NotifyState::Other("STATUS=init failed".into())]);
+        #[cfg(target_os = "linux")]
+        let _ = daemon::notify(
+            false,
+            &[libsystemd::daemon::NotifyState::Other(
+                "STATUS=init failed".into(),
+            )],
+        );
         std::process::exit(1);
     }
 
-    let _ = daemon::notify(false, &[NotifyState::Ready]);
+    #[cfg(target_os = "linux")]
+    let _ = daemon::notify(false, &[libsystemd::daemon::NotifyState::Ready]);
     info!("live: all sensors ready — starting control loop");
 
     let source: Box<dyn SensorSource> = Box::new(LiveSensorSource::new(state.clone()));
@@ -86,9 +104,8 @@ pub async fn run(args: Args, config: &Config, observability: &Observability) -> 
         source,
         actuator,
         Some(state.clone()),
-        mcap_tx,
+        Some(bus),
         config,
-        observability,
         &ControlLoopOptions {
             cost_out: args.cost_out.clone(),
             csv_out: args.csv_out.clone(),
@@ -103,6 +120,10 @@ pub async fn run(args: Args, config: &Config, observability: &Observability) -> 
             warn!("sensor thread panicked: {:?}", e);
         }
     }
+
+    // finish() blocks until the recorder has flushed all buffered events and
+    // written the MCAP summary section. Without it the file may be truncated
+    // if the process exits before the background thread drains its channel.
     if let Some(rec) = recorder {
         info!("live: flushing MCAP");
         rec.finish();

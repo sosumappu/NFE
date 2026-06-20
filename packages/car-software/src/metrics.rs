@@ -36,19 +36,29 @@ pub struct TickMetrics {
     pub sensor_fault: bool,
 }
 
-const RING_CAP: usize = 12_000;
+const RING_CAP: usize = 60_000;
 
 pub struct MetricsLog {
-    buf: Box<[TickMetrics; RING_CAP]>,
+    buf: Box<[TickMetrics]>,
     head: usize,
     count: usize,
     start: Instant,
 }
 
+impl Default for MetricsLog {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MetricsLog {
     pub fn new() -> Self {
+        // Avoid allocating a large array on the stack (which can cause a
+        // stack overflow when running tests). Allocate on the heap via a
+        // Vec and convert to a boxed slice instead.
+        let vec = vec![TickMetrics::default(); RING_CAP];
         Self {
-            buf: Box::new([TickMetrics::default(); RING_CAP]),
+            buf: vec.into_boxed_slice(),
             head: 0,
             count: 0,
             start: Instant::now(),
@@ -70,6 +80,10 @@ impl MetricsLog {
 
     pub fn len(&self) -> usize {
         self.count.min(RING_CAP)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.count == 0
     }
     pub fn total_ticks(&self) -> usize {
         self.count

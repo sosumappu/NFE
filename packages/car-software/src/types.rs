@@ -5,13 +5,10 @@
 /// ImuSample stores the imu readings
 /// ImuBias, Attitude, and KinematicState are used to properly integrate the imu readings to get the
 /// speed and pose
-
-// ── LIDAR point cloud ──────────────────────────────────────────────────────
-
+///
 /// One point in the car's local frame.
 ///   +x = forward, +y = left
 ///   angle_deg: car-frame angle, -180..+180 (negative = right)
-///
 ///
 use std::f32::consts::{PI, TAU};
 use std::ops::Sub;
@@ -96,6 +93,52 @@ impl LidarCloud {
 }
 
 impl<'a> LidarCloudView<'a> {
+    pub fn median_filtered(
+        &self,
+        buf: &'a mut Vec<LidarPoint>,
+        half_width: usize,
+    ) -> LidarCloudView<'a> {
+        let n = self.points.len();
+        buf.clear();
+        buf.reserve(n);
+
+        // Scratch space — reused each iteration, no per-point allocation
+        let window_size = 2 * half_width + 1;
+        let mut scratch = Vec::with_capacity(window_size);
+
+        for i in 0..n {
+            scratch.clear();
+
+            // Collect distances from the window, wrapping circularly
+            for j in 0..window_size {
+                let idx = (i + n + j - half_width) % n;
+                scratch.push(self.points[idx].dist_m);
+            }
+
+            // Partial sort — only need the median, not full sort
+            let mid = scratch.len() / 2;
+            let median_dist = *scratch
+                .select_nth_unstable_by(mid, |a, b| {
+                    a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .1;
+
+            // Preserve original point geometry, replace distance
+            let p = &self.points[i];
+            let angle_rad = p.angle_rad;
+            buf.push(LidarPoint {
+                dist_m: median_dist,
+                x: median_dist * angle_rad.cos(),
+                y: -median_dist * angle_rad.sin(),
+                ..*p
+            });
+        }
+
+        LidarCloudView {
+            points: buf,
+            timestamp_us: self.timestamp_us,
+        }
+    }
     pub fn find_breakpoint(&self) -> Option<&LidarPoint> {
         if self.points.len() < 2 {
             return None;

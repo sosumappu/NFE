@@ -12,7 +12,6 @@
 ///   - ImuSample::default() → gz=0 feeds LQR a false "no yaw"
 ///   - LidarCloud::default() → empty cloud, obstacle_closer_than() blind
 ///   - sonar f32::MAX → "no obstacle" (safe, but still unverified)
-
 use std::{fmt, time::Duration};
 use tokio::sync::watch;
 use tracing::{error, info, warn};
@@ -29,8 +28,8 @@ pub enum Sensor {
 impl fmt::Display for Sensor {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Sensor::Lidar    => write!(f, "LIDAR"),
-            Sensor::Imu      => write!(f, "IMU"),
+            Sensor::Lidar => write!(f, "LIDAR"),
+            Sensor::Imu => write!(f, "IMU"),
             Sensor::Sonar(n) => write!(f, "Sonar[{n}]"),
         }
     }
@@ -56,13 +55,13 @@ pub struct ReadinessBarrier {
 /// Handle given to each sensor thread — call `.signal()` once on first valid reading.
 pub struct ReadySignal {
     sensor: Sensor,
-    tx:     watch::Sender<bool>,
+    tx: watch::Sender<bool>,
 }
 
 impl ReadySignal {
     /// Mark this sensor as ready.  Idempotent — safe to call multiple times.
     pub fn dummy(sensor: Sensor) -> Self {
-        let (tx,_) = watch::channel(false);
+        let (tx, _) = watch::channel(false);
         Self { sensor, tx }
     }
     pub fn signal(&self) {
@@ -93,7 +92,10 @@ impl ReadinessBarrier {
 
         for &sensor in REQUIRED {
             let (tx, _rx) = watch::channel(false);
-            signals.push(ReadySignal { sensor, tx: tx.clone() });
+            signals.push(ReadySignal {
+                sensor,
+                tx: tx.clone(),
+            });
             senders.push((sensor, tx));
         }
 
@@ -103,7 +105,10 @@ impl ReadinessBarrier {
     /// Block until every sensor has signalled ready, or `timeout` expires.
     /// Returns `Err(InitError)` listing every sensor that didn't respond.
     pub async fn wait_all_ready(&self, timeout: Duration) -> Result<(), InitError> {
-        info!("init: waiting for {} sensors (timeout={timeout:?})", REQUIRED.len());
+        info!(
+            "init: waiting for {} sensors (timeout={timeout:?})",
+            REQUIRED.len()
+        );
 
         let deadline = tokio::time::Instant::now() + timeout;
         let mut failed = Vec::new();
