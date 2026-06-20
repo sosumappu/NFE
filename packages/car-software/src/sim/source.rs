@@ -19,7 +19,7 @@
 use std::{
     f32::consts::{PI, TAU},
     sync::{Arc, Mutex},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 
 use anyhow::Result;

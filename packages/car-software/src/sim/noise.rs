@@ -66,9 +66,11 @@ struct Xorshift64 {
 
 impl Xorshift64 {
     fn new() -> Self {
-        use std::time::{SystemTime, UNIX_EPOCH};
+        // Use a small wall-clock seeding source. Keep the local import narrow to
+        // avoid unused import warnings elsewhere.
+        use std::time::SystemTime;
         let seed = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
+            .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .subsec_nanos() as u64
             | 1;
