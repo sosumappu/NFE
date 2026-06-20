@@ -193,12 +193,25 @@ pub async fn run(
         }
 
         // Not blind: update kinematics and deskew
+        // Save prior kinematic trust values in case IMU is stale; we will
+        // choose to ignore newly-integrated velocity/yaw if IMU is deemed stale.
+        let prior_speed = kin.current_speed();
+        let prior_yaw_rate = kin.current_yaw_rate();
+
         let handle = kin.update(&snap.imu);
         let cloud = kin.deskew(&snap.lidar, &mut deskew_buf);
         let filtered = cloud.median_filtered(&mut filter_buf, 5);
 
         // --- ESTOP threat check on deskewed+filtered cloud (hysteresis)
-        let v_current = kin.current_speed();
+        // Use integrated velocity unless IMU is stale, in which case fall back
+        // to the last trusted speed to avoid spuriously-short estop_len.
+        let mut v_current = kin.current_speed();
+        let mut yaw_rate_for_control = kin.current_yaw_rate();
+        if imu_stale {
+            v_current = prior_speed;
+            yaw_rate_for_control = prior_yaw_rate;
+        }
+
         let (threat, estop_len) = crate::control::safety::estop_threat_cloud(&filtered, v_current, last_steering, safety);
         let curv = last_steering.tan() / (2.0 * safety.wheelbase_m);
 
@@ -274,12 +287,17 @@ pub async fn run(
             lateral_error_m: lateral_m,
             lateral_rate_m_s: kin.lateral_rate(),
             heading_error_rad: heading_err,
-            yaw_rate_rad_s: kin.current_yaw_rate(),
+            yaw_rate_rad_s: yaw_rate_for_control,
         };
         let steering = lqr.compute_lateral(&lqr_state);
         let v_target = speed.compute(&cloud, err_dist, heading_err);
-        let v_current = kin.current_speed();
-        let throttle = pid.compute_longitudinal(v_target - v_current);
+
+        // If IMU is stale, do not trust integrated speed for longitudinal control
+        // — use last trusted speed and bias the throttle slightly positive (creep).
+        let mut throttle = pid.compute_longitudinal(v_target - v_current);
+        if imu_stale {
+            throttle = throttle.max(0.05);
+        }
 
         actuator.set_steering(steering)?;
         actuator.set_throttle(throttle)?;

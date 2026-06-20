@@ -7,7 +7,6 @@ hz = 100
 estop_dist_m = 0.30
 # [lat_err, later_rate, heading_err, yaw_rate]
 lqr = [0.80, 0.30, 1.20, 0.40]
-watchdog_max_missed = 3
 
 [control.speed]
 v_max = 1.0

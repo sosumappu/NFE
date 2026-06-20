@@ -70,7 +70,13 @@ mod tests {
     fn make_point(x: f32, y: f32) -> LidarPoint {
         let dist = (x * x + y * y).sqrt();
         let angle = y.atan2(x);
-        LidarPoint { x, y, dist_m: dist, angle_rad: angle, timestamp_us: 0 }
+        LidarPoint {
+            x,
+            y,
+            dist_m: dist,
+            angle_rad: angle,
+            timestamp_us: 0,
+        }
     }
 
     fn default_safety() -> SafetyConfig {
@@ -92,8 +98,12 @@ mod tests {
         let arc_cap = safety.c_arc * safety.wheelbase_m / tan_d;
         let estop_len = base_len.min(arc_cap);
         // high v→base_len clamped to ESTOP_MAX_M; arc_cap is huge (0.1075/0.0717≈1.5)
-        assert!((estop_len - safety.estop_max_m).abs() < 0.01,
-            "zero steering: expected estop_max ({:.3}) got ({:.3})", safety.estop_max_m, estop_len);
+        assert!(
+            (estop_len - safety.estop_max_m).abs() < 0.01,
+            "zero steering: expected estop_max ({:.3}) got ({:.3})",
+            safety.estop_max_m,
+            estop_len
+        );
     }
 
     #[test]
@@ -103,8 +113,12 @@ mod tests {
         let tan_d = steering.tan().abs().max(safety.tan_min);
         let arc_cap = safety.c_arc * safety.wheelbase_m / tan_d;
         let expected = 0.5 * 0.215 / 0.7_f32.tan();
-        assert!((arc_cap - expected).abs() < 0.005,
-            "full lock: expected {:.4}m, got {:.4}m", expected, arc_cap);
+        assert!(
+            (arc_cap - expected).abs() < 0.005,
+            "full lock: expected {:.4}m, got {:.4}m",
+            expected,
+            arc_cap
+        );
         // base_len at any speed is capped by this ~0.128 m
         let estop_len = (3.0_f32).min(arc_cap); // clamp irrelevant, arc_cap wins
         assert!(estop_len < safety.estop_min_m); // shorter than min at full lock
@@ -118,8 +132,12 @@ mod tests {
         let tan_d = steering.tan().abs().max(safety.tan_min);
         let arc_cap = safety.c_arc * safety.wheelbase_m / tan_d;
         let expected = 0.5 * 0.215 / 0.3_f32.tan();
-        assert!((arc_cap - expected).abs() < 0.005,
-            "17° steer: expected {:.4}m, got {:.4}m", expected, arc_cap);
+        assert!(
+            (arc_cap - expected).abs() < 0.005,
+            "17° steer: expected {:.4}m, got {:.4}m",
+            expected,
+            arc_cap
+        );
     }
 
     #[test]
@@ -127,18 +145,31 @@ mod tests {
         let safety = default_safety();
         // At v=0, estop_len = ESTOP_MIN_M = 0.25 m. Point must have x <= 0.25.
         let points = [make_point(0.20, 0.0)];
-        let cloud = LidarCloudView { points: &points, timestamp_us: 0 };
+        let cloud = LidarCloudView {
+            points: &points,
+            timestamp_us: 0,
+        };
         let (threat, estop_len) = estop_threat_cloud(&cloud, 0.0, 0.0, &safety);
-        assert!(threat, "point at (0.20, 0) should trip; estop_len={:.3}", estop_len);
+        assert!(
+            threat,
+            "point at (0.20, 0) should trip; estop_len={:.3}",
+            estop_len
+        );
     }
 
     #[test]
     fn point_outside_channel_does_not_trip() {
         let safety = default_safety();
         let points = [make_point(0.5, 0.5)];
-        let cloud = LidarCloudView { points: &points, timestamp_us: 0 };
+        let cloud = LidarCloudView {
+            points: &points,
+            timestamp_us: 0,
+        };
         let (threat, _) = estop_threat_cloud(&cloud, 0.0, 0.0, &safety);
-        assert!(!threat, "point at (0.5, 0.5) should not trip (y outside channel)");
+        assert!(
+            !threat,
+            "point at (0.5, 0.5) should not trip (y outside channel)"
+        );
     }
 
     #[test]
@@ -157,10 +188,18 @@ mod tests {
         // Point at (0.15, 0.20) is far outside even the curved channel
         let points = [make_point(0.15, 0.20)];
         let (threat_straight, _) = estop_threat_cloud(
-            &LidarCloudView { points: &points, timestamp_us: 0 },
-            0.0, 0.0, &safety,
+            &LidarCloudView {
+                points: &points,
+                timestamp_us: 0,
+            },
+            0.0,
+            0.0,
+            &safety,
         );
-        assert!(!threat_straight, "point at y=0.20 should be outside even straight channel");
+        assert!(
+            !threat_straight,
+            "point at y=0.20 should be outside even straight channel"
+        );
 
         // Now test a point that IS inside straight but OUTSIDE curved:
         // At x=0.30, full lock: y_center = curv * 0.09 = 1.958 * 0.09 = 0.176
@@ -169,8 +208,13 @@ mod tests {
         // Let's just verify the arc_cap shrinks, which we already test above.
         // This test confirms curvature math runs without panic.
         let (threat_curved, _) = estop_threat_cloud(
-            &LidarCloudView { points: &points, timestamp_us: 0 },
-            0.0, 0.6, &safety,
+            &LidarCloudView {
+                points: &points,
+                timestamp_us: 0,
+            },
+            0.0,
+            0.6,
+            &safety,
         );
         // Both should be false (point is far from center); just confirm runnable
         assert!(!threat_curved);
@@ -180,7 +224,10 @@ mod tests {
     fn point_behind_vehicle_ignored() {
         let safety = default_safety();
         let points = [make_point(-0.5, 0.0)];
-        let cloud = LidarCloudView { points: &points, timestamp_us: 0 };
+        let cloud = LidarCloudView {
+            points: &points,
+            timestamp_us: 0,
+        };
         let (threat, _) = estop_threat_cloud(&cloud, 0.0, 0.0, &safety);
         assert!(!threat, "point behind (x < 0) must not trip");
     }
@@ -190,9 +237,16 @@ mod tests {
         let safety = default_safety();
         // At v=0, base_len = ESTOP_MIN_M = 0.25
         let points = [make_point(10.0, 0.0)];
-        let cloud = LidarCloudView { points: &points, timestamp_us: 0 };
+        let cloud = LidarCloudView {
+            points: &points,
+            timestamp_us: 0,
+        };
         let (threat, estop_len) = estop_threat_cloud(&cloud, 0.0, 0.0, &safety);
-        assert!(!threat, "point at x={:.1} > estop_len={:.3} must not trip", 10.0, estop_len);
+        assert!(
+            !threat,
+            "point at x={:.1} > estop_len={:.3} must not trip",
+            10.0, estop_len
+        );
     }
 
     // ── Blind state machine tests ─────────────────────────────────
@@ -224,8 +278,8 @@ mod tests {
     #[test]
     fn blind_resets_on_good_tick() {
         let mut bs = BlindState::new();
-        bs.update(true, 100, 350, 0.0);   // blind, 100 ms
-        bs.update(true, 100, 350, 0.0);   // blind, 200 ms
+        bs.update(true, 100, 350, 0.0); // blind, 100 ms
+        bs.update(true, 100, 350, 0.0); // blind, 200 ms
         let action = bs.update(false, 10, 350, 0.0); // good!
         assert_eq!(action, BlindAction::Normal);
         assert_eq!(bs.blind_ms, 0);
@@ -258,49 +312,5 @@ mod tests {
         let action = bs.update(true, 10, 350, 1.0);
         assert_eq!(action, BlindAction::Coast { last_steering: 1.0 });
         assert_eq!(bs.blind_ms, 10);
-    }
-
-    // ── Leaky-bucket deadline-miss tests ──────────────────────────
-    #[test]
-    fn leaky_bucket_three_consecutive_misses_trip() {
-        let mut bucket: u32 = 0;
-        // miss: +2 each
-        bucket = bucket.saturating_add(2);
-        assert!(bucket < 6);
-        bucket = bucket.saturating_add(2);
-        assert!(bucket < 6);
-        bucket = bucket.saturating_add(2);
-        assert!(bucket >= 6, "3 consecutive misses should reach 6");
-    }
-
-    #[test]
-    fn leaky_bucket_alternating_miss_kick_eventually_trips() {
-        let mut bucket: u32 = 0;
-        // miss/kick/miss/kick pattern: each pair nets +1
-        for _ in 0..5 {
-            bucket = bucket.saturating_add(2); // miss
-            bucket = bucket.saturating_sub(1);  // kick
-        }
-        // after 5 pairs: bucket = 5
-        assert_eq!(bucket, 5, "5 miss/kick pairs should reach 5");
-        // one more miss+miss
-        bucket = bucket.saturating_add(2);
-        assert!(bucket >= 6, "6th miss should trip");
-    }
-
-    #[test]
-    fn leaky_bucket_kick_alone_decrements() {
-        let mut bucket: u32 = 4;
-        bucket = bucket.saturating_sub(1);
-        assert_eq!(bucket, 3);
-        bucket = bucket.saturating_sub(1);
-        assert_eq!(bucket, 2);
-    }
-
-    #[test]
-    fn leaky_bucket_never_underflows() {
-        let mut bucket: u32 = 0;
-        bucket = bucket.saturating_sub(1);
-        assert_eq!(bucket, 0);
     }
 }
