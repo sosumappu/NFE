@@ -143,11 +143,11 @@
   boot.loader.raspberry-pi.bootloader = "kernel";
 
   # ── car.service ───────────────────────────────────────────────
-  # Enabled here; package wired in flake.nix once car-software builds
+  # Enabled here; package wired in flake.nix once nfe-car builds
   services.car = {
     enable = true;
-    package = pkgs.car-software;
-    requireStateGate = true;
+    package = pkgs.nfe-car;
+    requireStartGate = true;
   };
 
   environment.systemPackages = with pkgs; [
@@ -160,7 +160,7 @@
     # RT debugging
     rt-tests # cyclictest, hackbench
     ethtool
-    car-software
+    nfe-car
   ];
 
   # ── Nix settings (allow deploy-rs to push closures) ───────────

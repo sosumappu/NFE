@@ -53,12 +53,12 @@
         overlays = [fenix.overlays.default self.overlays.default];
       };
   in {
-    # ── Overlay: car-software + RT Rust toolchain ─────────────────
+    # ── Overlay: nfe-car + RT Rust toolchain ─────────────────
     overlays.default = final: prev: {
       rustToolchain = fenix.packages.${prev.stdenv.hostPlatform.system}.stable.toolchain;
 
-      car-software = prev.callPackage ./packages/car-software {
-        inherit (prev) systemd libudev-zero;
+      nfe-car = prev.callPackage ./packages/nfe-car {
+        inherit (prev) systemd protobuf;
         rustPlatform = prev.makeRustPlatform {
           cargo = final.rustToolchain;
           rustc = final.rustToolchain;
@@ -68,8 +68,8 @@
 
     #
     packages = forSystems (system: {
-      inherit ((pkgsFor "aarch64-linux")) car-software;
-      default = (pkgsFor "aarch64-linux").car-software;
+      inherit ((pkgsFor "aarch64-linux")) nfe-car;
+      default = (pkgsFor "aarch64-linux").nfe-car;
     });
 
     # ── NixOS configuration: nfe ──────────────────────────────────
@@ -141,6 +141,7 @@
             fenix.packages.${system}.stable.toolchain
             pkg-config
             protobuf
+            mcap-cli
           ]
           ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
             rt-tests
@@ -151,7 +152,7 @@
           echo "  NeverFastEnough dev shell"
           echo "  ─────────────────────────────────────────────────────────────────"
           echo "  Build"
-          echo "    nom build .#packages.aarch64-linux.car-software  build all binaries"
+          echo "    nom build .#packages.aarch64-linux.nfe-car  build all binaries"
           echo "    cross build --release --target aarch64-unknown-linux-gnu  fast binary build"
           echo ""
           echo "  Deploy"
@@ -165,7 +166,7 @@
           echo "    ssh localhost@nfe.local 'car-diag lidar'          live LIDAR stats"
           echo "    ssh localhost@nfe.local 'car-diag sonar --once'   sonar pass/fail"
           echo "    ssh localhost@nfe.local 'car --record /tmp/s.bin' record a session"
-          echo "    ssh localhost@nfe.local 'car --stream'            broadcast sensors UDP:9200"
+          echo "    ssh localhost@nfe.local 'nfe-arm --arm --host nfe.local' arm StartGate"
           echo "    ssh localhost@nfe.local 'systemctl restart car'   restart service"
           echo "    ssh localhost@nfe.local 'journalctl -u car -f'    live service logs"
           echo ""

@@ -1,0 +1,13 @@
+[package]
+name = "nfe-tunable-derive"
+version = "0.1.0"
+edition = "2021"
+description = "derive(Tunable) — reflect param structs into a flat, bounded search space"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "2", features = ["full"] }
+quote = "1"
+proc-macro2 = "1"

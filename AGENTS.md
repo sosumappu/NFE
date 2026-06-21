@@ -21,13 +21,10 @@ skill for details).
 OS related changes are made in `hosts/nfe/configuration.nix` were we declare
 services used. The software running the car is declared as a systemd.service in
 `modules/car-service.nix` and the real-time patch in `modules/preempt-rt.nix`
-The said software is stored in `packages/car-software` and built in rust.
+The said software is stored in `packages/nfe-car` and built in rust.
 
-the car-software include 3 binaries `car-diag` which is used for diagnostics on
-the sensors, `car-tune` which uses CMA-ES to optimise the control loop
-parameters and the `car` binary itself that takes arguments to either stream to
-foxglove, save the run as an mcap file, replay the run, tune parameters, select
-a config file.
+the nfe-car package includes the `car` runtime binary, `car-diag` diagnostics,
+`car-tune` CMA-ES tuning, and `nfe-arm` StartGate arming helper.
 
 Deployment of the car OS and binaries is made using deploy-rs see `flake.nix`
 

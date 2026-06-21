@@ -1,0 +1,12 @@
+[package]
+name = "nfe-algo"
+version = "0.1.0"
+edition = "2021"
+description = "NFE pure algorithms: perception, estimation, mapping, control, supervisor"
+
+[dependencies]
+nfe-core = { path = "../nfe-core" }
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+proptest = "1"

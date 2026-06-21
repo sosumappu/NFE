@@ -1,0 +1,11 @@
+[project]
+name = "nfe-tools"
+version = "0.1.0"
+description = "NFE Car tools utilitaries"
+requires-python = ">=3.13"
+dependencies = [
+    "numpy>=2.4.6",
+    "opencv-python>=4.13.0.92",
+    "pandas>=3.0.3",
+    "scipy>=1.17.1",
+]

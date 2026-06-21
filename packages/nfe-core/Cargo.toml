@@ -1,0 +1,13 @@
+[package]
+name = "nfe-core"
+version = "0.1.0"
+edition = "2021"
+description = "NFE shared types, params registry, and trait boundaries (no I/O)"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+anyhow = "1"
+nfe-tunable-derive = { path = "../nfe-tunable-derive" }
+
+[dev-dependencies]
+serde_json = "1"

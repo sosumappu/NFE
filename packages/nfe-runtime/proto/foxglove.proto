@@ -1,0 +1,82 @@
+syntax = "proto3";
+package foxglove;
+
+message PackedElementField {
+  string name = 1;
+  fixed32 offset = 2;
+  uint32 type = 3;
+}
+
+message PointCloud {
+  uint64 timestamp = 1;
+  string frame_id = 2;
+  fixed32 point_stride = 3;
+  repeated PackedElementField fields = 4;
+  bytes data = 5;
+}
+
+message Vector3 {
+  double x = 1;
+  double y = 2;
+  double z = 3;
+}
+
+message Quaternion {
+  double x = 1;
+  double y = 2;
+  double z = 3;
+  double w = 4;
+}
+
+message Pose {
+  Vector3 position = 1;
+  Quaternion orientation = 2;
+}
+
+message Timestamp {
+  int32 sec = 1;
+  uint32 nsec = 2;
+}
+
+message PoseInFrame {
+  Timestamp timestamp = 1;
+  string frame_id = 2;
+  Pose pose = 3;
+}
+
+message PosesInFrame {
+  Timestamp timestamp = 1;
+  string frame_id = 2;
+  repeated Pose poses = 3;
+}
+
+message Color {
+  float r = 1;
+  float g = 2;
+  float b = 3;
+  float a = 4;
+}
+
+message LinePrimitive {
+  uint32 type = 1;
+  Pose pose = 2;
+  double thickness = 3;
+  double scale_invariant_thickness = 4;
+  Color color = 5;
+  repeated Vector3 points = 6;
+  repeated Color colors = 7;
+  repeated double indices = 8;
+}
+
+message SceneEntity {
+  string id = 1;
+  Timestamp timestamp = 2;
+  string frame_id = 3;
+  uint32 frame_locked = 4;
+  repeated LinePrimitive lines = 5;
+}
+
+message SceneUpdate {
+  repeated SceneEntity entities = 1;
+  repeated string deletions = 2;
+}

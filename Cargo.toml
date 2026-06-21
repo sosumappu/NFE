@@ -1,0 +1,19 @@
+[workspace]
+members = [
+  "packages/nfe-car",
+  "packages/nfe-algo",
+  "packages/nfe-core",
+  "packages/nfe-runtime",
+  "packages/nfe-sim",
+  "packages/nfe-tunable-derive",
+]
+resolver = "2"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 12
+panic = "abort"
+
+[profile.dev]
+opt-level = 1

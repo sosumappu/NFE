@@ -1,0 +1,26 @@
+[package]
+name = "nfe-runtime"
+version = "0.1.0"
+edition = "2021"
+description = "NFE runtime orchestration: pipeline, mapping worker, config, and test harness glue"
+
+[dependencies]
+nfe-core = { path = "../nfe-core" }
+nfe-algo = { path = "../nfe-algo" }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+anyhow = "1"
+mcap = "0.25.0"
+memmap2 = "0.9.10"
+serde_json = "1"
+tracing = "0.1"
+prost = "0.14.4"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rppal = "0.22.1"
+
+[build-dependencies]
+prost-build = "0.14.4"
+
+[dev-dependencies]
+tempfile = "3"
