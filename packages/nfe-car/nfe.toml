@@ -85,6 +85,16 @@ tau_s = 0.03
 deadband = 0.05
 brake_gain = 1.4
 
+[sim.dynamic.drivetrain]
+front_drive_fraction = 0.5
+traction_circle = true
+
+[sim.dynamic.low_speed]
+blend_start_ms = 0.05
+blend_end_ms = 0.35
+yaw_rate_margin = 1.6
+lateral_damping = 10.0
+
 [sim.dynamic.tyre]
 mu = 1.2
 pacejka_shape = 1.3

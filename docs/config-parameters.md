@@ -116,6 +116,17 @@ This table documents the TOML parameters loaded by `packages/nfe-car/src/config.
 | `sim.dynamic.motor.deadband` | `0.05` | Symmetric throttle magnitude below which no drive/brake acceleration is applied. | Slowly ramp throttle from zero and find the smallest command that consistently moves the car or produces `ax` above IMU noise. Repeat forward and brake; choose a safe average. |
 | `sim.dynamic.motor.brake_gain` | `1.4` | Ratio of braking acceleration authority to drive acceleration authority at equal effective command. | Compare filtered braking deceleration to forward acceleration at equal command after subtracting drag: `brake_gain ≈ abs(a_brake) / a_drive`. |
 
+## Simulator drivetrain and low-speed stabilization
+
+| TOML path | Default | Meaning | How to get or tune it |
+| --- | ---: | --- | --- |
+| `sim.dynamic.drivetrain.front_drive_fraction` | `0.5` | Fraction of drive/brake force applied at the front axle before per-axle traction limiting. `0.5` models a balanced 4WD drivetrain. | Use drivetrain layout or torque split. For a normal 4WD RC car start at `0.5`; bias upward/downward only if logs show persistent throttle-on understeer/oversteer that matches real behavior. |
+| `sim.dynamic.drivetrain.traction_circle` | `true` | Enables per-axle combined-slip limiting so drive/brake force consumes some lateral grip. | Keep `true` for realistic 4WD behavior. Temporarily disable only when fitting linear tyre stiffness from low-throttle, small-slip data. |
+| `sim.dynamic.low_speed.blend_start_ms` | `0.05` | Speed below which dynamic yaw fully falls back to kinematic bicycle yaw. | Set near the lowest reliable rolling speed. Increase if the car still pivots near rest; decrease if very-low-speed turning looks too constrained. |
+| `sim.dynamic.low_speed.blend_end_ms` | `0.35` | Speed above which the dynamic model is used without low-speed yaw blending. | Set above the speed where tyre slip-angle equations become numerically well-behaved. Raise if near-rest spin remains; lower if normal slow turns feel overly kinematic. |
+| `sim.dynamic.low_speed.yaw_rate_margin` | `1.6` | Maximum allowed yaw rate as a margin over geometric bicycle yaw rate. | Increase only if real logs show the car can rotate faster than the steering-geometry prediction without sliding unrealistically; decrease if sim still spins too easily. |
+| `sim.dynamic.low_speed.lateral_damping` | `10.0` | Extra lateral-velocity damping near rest, in `1/s`. | Increase if the car slides sideways or pivots at low speed; decrease if slow transitions look artificially sticky. |
+
 ## Simulator tyre, chassis, and latency
 
 | TOML path | Default | Meaning | How to get or tune it |

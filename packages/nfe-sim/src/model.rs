@@ -205,6 +205,48 @@ impl Default for MotorParams {
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy)]
 #[serde(default)]
+pub struct DrivetrainParams {
+    /// Fraction of drive/brake force applied at the front axle.
+    pub front_drive_fraction: f32,
+    /// Limit longitudinal + lateral force at each axle by available grip.
+    pub traction_circle: bool,
+}
+
+impl Default for DrivetrainParams {
+    fn default() -> Self {
+        Self {
+            front_drive_fraction: 0.5,
+            traction_circle: true,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
+#[serde(default)]
+pub struct LowSpeedParams {
+    /// Speed below which the dynamic model fully falls back to kinematic yaw.
+    pub blend_start_ms: f32,
+    /// Speed above which the dynamic model is used without low-speed blending.
+    pub blend_end_ms: f32,
+    /// Margin over geometric bicycle yaw rate before yaw-rate clamping applies.
+    pub yaw_rate_margin: f32,
+    /// Extra lateral velocity damping near rest [1/s].
+    pub lateral_damping: f32,
+}
+
+impl Default for LowSpeedParams {
+    fn default() -> Self {
+        Self {
+            blend_start_ms: 0.05,
+            blend_end_ms: 0.35,
+            yaw_rate_margin: 1.6,
+            lateral_damping: 10.0,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
+#[serde(default)]
 pub struct TyreParams {
     /// Surface friction coefficient used as the lateral force peak scale.
     pub mu: f32,
@@ -261,6 +303,8 @@ pub struct DynamicBicycleParams {
     pub accel_max: f32,
     pub servo: ServoParams,
     pub motor: MotorParams,
+    pub drivetrain: DrivetrainParams,
+    pub low_speed: LowSpeedParams,
     pub tyre: TyreParams,
     pub chassis: ChassisParams,
 }
@@ -280,6 +324,8 @@ impl Default for DynamicBicycleParams {
             accel_max: 20.0,
             servo: ServoParams::default(),
             motor: MotorParams::default(),
+            drivetrain: DrivetrainParams::default(),
+            low_speed: LowSpeedParams::default(),
             tyre: TyreParams::default(),
             chassis: ChassisParams::default(),
         }
@@ -299,6 +345,8 @@ pub struct DynamicBicycle {
     pub accel_max: f32,
     pub servo: ServoParams,
     pub motor: MotorParams,
+    pub drivetrain: DrivetrainParams,
+    pub low_speed: LowSpeedParams,
     pub tyre: TyreParams,
     pub chassis: ChassisParams,
     pub actual_steering_rad: f32,
@@ -320,6 +368,8 @@ impl DynamicBicycle {
             accel_max: params.accel_max,
             servo: params.servo,
             motor: params.motor,
+            drivetrain: params.drivetrain,
+            low_speed: params.low_speed,
             tyre: params.tyre,
             chassis: params.chassis,
             actual_steering_rad: 0.0,
@@ -341,6 +391,8 @@ impl DynamicBicycle {
             accel_max: self.accel_max,
             servo: self.servo,
             motor: self.motor,
+            drivetrain: self.drivetrain,
+            low_speed: self.low_speed,
             tyre: self.tyre,
             chassis: self.chassis,
         }
@@ -361,7 +413,13 @@ impl DynamicBicycle {
         };
         let rate_limit = self.servo.rate_limit_rad_s.max(0.0);
         let steering_rate = steering_rate.clamp(-rate_limit, rate_limit);
-        self.actual_steering_rad += steering_rate * dt;
+        let steering_delta = steering_rate * dt;
+        self.actual_steering_rad +=
+            if effective_error != 0.0 && steering_delta.abs() > effective_error.abs() {
+                effective_error
+            } else {
+                steering_delta
+            };
 
         let throttle = finite_or_zero(cmd.throttle).clamp(-1.0, 1.0);
         let deadband = self.motor.deadband.clamp(0.0, 0.99);
@@ -408,6 +466,20 @@ impl DynamicBicycle {
         peak * (shape * (stiffness_factor * alpha).atan()).sin()
     }
 
+    fn traction_limit(&self, fx: f32, fy: f32, normal_load: f32) -> (f32, f32) {
+        if !self.drivetrain.traction_circle {
+            return (fx, fy);
+        }
+        let peak = self.tyre.mu.max(0.0) * normal_load.max(0.0);
+        let mag = fx.hypot(fy);
+        if peak > 0.0 && mag > peak {
+            let scale = peak / mag;
+            (fx * scale, fy * scale)
+        } else {
+            (fx, fy)
+        }
+    }
+
     fn eom(&self, s: &DynamicState, input: DynamicInput) -> DynamicDeriv {
         let vx = s.vx.max(0.05); // avoid division by zero at rest
         let vx_motion = s.vx.max(0.0);
@@ -419,17 +491,32 @@ impl DynamicBicycle {
         let alpha_f = steering - ((s.vy + self.lf * s.yaw_rate) / vx).atan();
         let alpha_r = -((s.vy - self.lr * s.yaw_rate) / vx).atan();
 
-        let drive_accel = (input.applied_accel_ms2 - self.drag_k * vx_motion * vx_motion.abs())
+        let accel_cmd = input
+            .applied_accel_ms2
             .clamp(-self.accel_max, self.accel_max);
-        let (normal_f, normal_r) = self.normal_loads(mass, input.applied_accel_ms2);
+        let drag_force = -mass * self.drag_k * vx_motion * vx_motion.abs();
+        let (normal_f, normal_r) = self.normal_loads(mass, accel_cmd);
 
         // Lateral forces. The sign convention is positive left.
         let fy_f = self.lateral_force(alpha_f, self.cf, normal_f);
         let fy_r = self.lateral_force(alpha_r, self.cr, normal_r);
 
-        let dvx = drive_accel - fy_f * steering.sin() / mass + s.vy * s.yaw_rate;
-        let dvy = (fy_f * steering.cos() + fy_r) / mass - vx_motion * s.yaw_rate;
-        let dyaw_rate = (self.lf * fy_f * steering.cos() - self.lr * fy_r) / iz;
+        let front_fraction = self.drivetrain.front_drive_fraction.clamp(0.0, 1.0);
+        let total_drive_force = mass * accel_cmd;
+        let fx_f = total_drive_force * front_fraction;
+        let fx_r = total_drive_force - fx_f;
+        let (fx_f, fy_f) = self.traction_limit(fx_f, fy_f, normal_f);
+        let (fx_r, fy_r) = self.traction_limit(fx_r, fy_r, normal_r);
+
+        let (sd, cd) = steering.sin_cos();
+        let front_body_fx = fx_f * cd - fy_f * sd;
+        let front_body_fy = fx_f * sd + fy_f * cd;
+        let body_fx = front_body_fx + fx_r + drag_force;
+        let body_fy = front_body_fy + fy_r;
+
+        let dvx = body_fx / mass + s.vy * s.yaw_rate;
+        let dvy = body_fy / mass - vx_motion * s.yaw_rate;
+        let dyaw_rate = (self.lf * front_body_fy - self.lr * fy_r) / iz;
 
         let (sy, cy) = s.yaw.sin_cos();
         DynamicDeriv {
@@ -440,6 +527,47 @@ impl DynamicBicycle {
             dy: vx_motion * sy + s.vy * cy,
             dyaw: s.yaw_rate,
         }
+    }
+
+    fn kinematic_yaw_rate(&self, speed: f32, steering: f32) -> f32 {
+        speed.max(0.0) * steering.tan() / self.wheelbase.max(1e-3)
+    }
+
+    fn low_speed_dynamic_weight(&self, speed: f32) -> f32 {
+        let start = self.low_speed.blend_start_ms.max(0.0);
+        let end = self.low_speed.blend_end_ms.max(start + 1e-3);
+        ((speed - start) / (end - start)).clamp(0.0, 1.0)
+    }
+
+    fn stabilize_low_speed(
+        &self,
+        prev: &DynamicState,
+        next: &mut DynamicState,
+        input: DynamicInput,
+        dt: f32,
+    ) {
+        let speed = prev.vx.max(0.0);
+        let dynamic_weight = self.low_speed_dynamic_weight(speed);
+        let kinematic_yaw_rate = self.kinematic_yaw_rate(speed, input.steering_rad);
+        let mut yaw_rate =
+            kinematic_yaw_rate * (1.0 - dynamic_weight) + next.yaw_rate * dynamic_weight;
+
+        let yaw_limit = kinematic_yaw_rate.abs() * self.low_speed.yaw_rate_margin.max(1.0);
+        if yaw_limit > 0.0 {
+            yaw_rate = yaw_rate.clamp(-yaw_limit, yaw_limit);
+        } else {
+            yaw_rate = 0.0;
+        }
+
+        let yaw_rate_changed = (yaw_rate - next.yaw_rate).abs() > 1e-4;
+        next.yaw_rate = yaw_rate;
+        if dynamic_weight < 0.999 || yaw_rate_changed {
+            next.yaw = wrap_angle(prev.yaw + yaw_rate * dt);
+        }
+
+        let damping =
+            (-self.low_speed.lateral_damping.max(0.0) * (1.0 - dynamic_weight) * dt).exp();
+        next.vy *= damping;
     }
 
     fn rk4(&self, s: &DynamicState, input: DynamicInput, dt: f32) -> (DynamicState, DynamicDeriv) {
@@ -472,11 +600,13 @@ impl VehicleModel for DynamicBicycle {
 
         let input = self.update_actuators(cmd, dt);
         let state = DynamicState::from(*s);
-        let (mut next, deriv) = self.rk4(&state, input, dt);
+        let (mut next, _) = self.rk4(&state, input, dt);
         if next.vx < 0.0 {
             next.vx = 0.0;
         }
+        self.stabilize_low_speed(&state, &mut next, input, dt);
         next.yaw = wrap_angle(next.yaw);
+        let deriv = self.eom(&next, input);
 
         VehicleState {
             x: next.x,
@@ -597,6 +727,8 @@ pub struct IdentifiedParams {
     pub accel_max: f32,
     pub servo: Option<ServoParams>,
     pub motor: Option<MotorParams>,
+    pub drivetrain: Option<DrivetrainParams>,
+    pub low_speed: Option<LowSpeedParams>,
     pub tyre: Option<TyreParams>,
     pub chassis: Option<ChassisParams>,
     /// Identification metadata (informational only)
@@ -622,6 +754,8 @@ impl Default for IdentifiedParams {
             accel_max: d.accel_max,
             servo: None,
             motor: None,
+            drivetrain: None,
+            low_speed: None,
             tyre: None,
             chassis: None,
             source_mcap: None,
@@ -675,6 +809,16 @@ impl IdentifiedModel {
             base.motor = motor;
         } else {
             params.motor = Some(base.motor);
+        }
+        if let Some(drivetrain) = params.drivetrain {
+            base.drivetrain = drivetrain;
+        } else {
+            params.drivetrain = Some(base.drivetrain);
+        }
+        if let Some(low_speed) = params.low_speed {
+            base.low_speed = low_speed;
+        } else {
+            params.low_speed = Some(base.low_speed);
         }
         if let Some(tyre) = params.tyre {
             base.tyre = tyre;
@@ -785,6 +929,66 @@ mod tests {
         });
         let force = model.lateral_force(2.0, model.cf, 5.0);
         assert!(force.abs() <= 5.01);
+    }
+
+    #[test]
+    fn low_speed_blend_prevents_in_place_rotation() {
+        let mut model = DynamicBicycle::from_params(DynamicBicycleParams {
+            servo: ServoParams {
+                tau_s: 0.0,
+                rate_limit_rad_s: 100.0,
+                backlash_rad: 0.0,
+            },
+            ..DynamicBicycleParams::default()
+        });
+        let state = VehicleState::default();
+        let cmd = ControlCommand {
+            steering_rad: 0.5,
+            throttle: 0.0,
+        };
+
+        let next = model.step(&state, &cmd, 0.1);
+        assert!(next.yaw_rate.abs() < 1e-4, "yaw_rate={}", next.yaw_rate);
+        assert!(next.yaw_rad.abs() < 1e-4, "yaw={}", next.yaw_rad);
+    }
+
+    #[test]
+    fn traction_circle_limits_4wd_drive_force() {
+        let mut model = DynamicBicycle::from_params(DynamicBicycleParams {
+            mass: 1.0,
+            cf: 0.0,
+            cr: 0.0,
+            motor_gain: 100.0,
+            drag_k: 0.0,
+            accel_max: 100.0,
+            motor: MotorParams {
+                tau_s: 0.0,
+                deadband: 0.0,
+                brake_gain: 1.0,
+            },
+            drivetrain: DrivetrainParams {
+                front_drive_fraction: 0.5,
+                traction_circle: true,
+            },
+            tyre: TyreParams {
+                mu: 0.5,
+                pacejka_shape: 1.3,
+                saturating: true,
+            },
+            chassis: ChassisParams { cg_height_m: 0.0 },
+            ..DynamicBicycleParams::default()
+        });
+        let state = VehicleState {
+            vx: 1.0,
+            ..VehicleState::default()
+        };
+        let cmd = ControlCommand {
+            steering_rad: 0.0,
+            throttle: 1.0,
+        };
+
+        let next = model.step(&state, &cmd, 0.01);
+        assert!(next.ax <= 0.5 * 9.806 + 0.1, "ax={}", next.ax);
     }
 
     #[test]

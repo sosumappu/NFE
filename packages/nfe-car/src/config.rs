@@ -336,7 +336,7 @@ mod tests {
         let path = std::env::temp_dir().join(format!("nfe-sim-{}.toml", std::process::id()));
         std::fs::write(
             &path,
-            "[sim]\nlength_m=0.44\nwidth_m=0.27\n[sim.dynamic]\nmass_kg=2.0\n[sim.dynamic.servo]\ntau_s=0.07\n[sim.latency]\nlatency_us=30000\n",
+            "[sim]\nlength_m=0.44\nwidth_m=0.27\n[sim.dynamic]\nmass_kg=2.0\n[sim.dynamic.servo]\ntau_s=0.07\n[sim.dynamic.drivetrain]\nfront_drive_fraction=0.6\n[sim.dynamic.low_speed]\nblend_end_ms=0.4\n[sim.latency]\nlatency_us=30000\n",
         )
         .unwrap();
 
@@ -345,6 +345,8 @@ mod tests {
         assert_eq!(config.sim.footprint.width_m, 0.27);
         assert_eq!(config.sim.dynamic.mass, 2.0);
         assert_eq!(config.sim.dynamic.servo.tau_s, 0.07);
+        assert_eq!(config.sim.dynamic.drivetrain.front_drive_fraction, 0.6);
+        assert_eq!(config.sim.dynamic.low_speed.blend_end_ms, 0.4);
         assert_eq!(config.sim.latency.latency_us, 30_000);
         assert_eq!(config.sim.kinematic.wheelbase, 0.33);
 
