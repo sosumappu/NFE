@@ -62,10 +62,11 @@ impl SensorSource for CoreSimSourceAdapter {
             anyhow::bail!("sim exhausted");
         };
         self.pending_events
-            .push(nfe_sim::telemetry::ground_truth_event(
+            .push(nfe_sim::telemetry::ground_truth_event_with_footprint(
                 self.inner.vehicle_state(),
                 self.inner.command(),
                 self.inner.timestamp_us(),
+                self.inner.footprint(),
             ));
         Ok(core_to_car_snapshot(snapshot))
     }
@@ -370,27 +371,37 @@ async fn sim_mode_records_runtime_mcap_topics() {
             msg.channel.message_encoding.clone(),
         );
     }
+    assert!(topics.contains("/tf"));
+    assert!(topics.contains("/tf_static"));
     assert!(topics.contains("/sensor/imu"));
     assert!(topics.contains("/sensor/lidar"));
     assert!(topics.contains("/sensor/sonar"));
     assert!(topics.contains("/control/command"));
+    assert!(topics.contains("/control/scene"));
     assert!(topics.contains("/control/metrics"));
     assert!(topics.contains("/world/snapshot"));
     assert!(topics.contains("/world/walls"));
     assert!(topics.contains("/sim/ground_truth/state"));
     assert!(topics.contains("/sim/ground_truth/pose"));
+    assert!(topics.contains("/sim/ground_truth/footprint"));
     assert!(topics.contains("/estimation/ekf/pose"));
     assert!(topics.contains("/control/start_gate"));
+    assert!(topics.contains("/perception/reactive/scene"));
+    assert_eq!(encodings["/tf"], "protobuf");
+    assert_eq!(encodings["/tf_static"], "protobuf");
     assert_eq!(encodings["/sensor/lidar"], "protobuf");
     assert_eq!(encodings["/world/walls"], "protobuf");
     assert_eq!(encodings["/sim/ground_truth/pose"], "protobuf");
+    assert_eq!(encodings["/sim/ground_truth/footprint"], "protobuf");
     assert_eq!(encodings["/estimation/ekf/pose"], "protobuf");
     assert_eq!(encodings["/sensor/imu"], "json");
     assert_eq!(encodings["/sensor/sonar"], "json");
     assert_eq!(encodings["/control/command"], "json");
+    assert_eq!(encodings["/control/scene"], "protobuf");
     assert_eq!(encodings["/control/metrics"], "json");
     assert_eq!(encodings["/control/start_gate"], "json");
     assert_eq!(encodings["/perception/reactive/corridor"], "json");
+    assert_eq!(encodings["/perception/reactive/scene"], "protobuf");
     assert_eq!(encodings["/estimation/ekf/state"], "json");
     assert_eq!(encodings["/sim/ground_truth/state"], "json");
     assert_eq!(encodings["/world/snapshot"], "json");

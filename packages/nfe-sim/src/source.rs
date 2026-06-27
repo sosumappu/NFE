@@ -17,6 +17,7 @@
 ///   let (source, actuator) = SimulatorSource::new(world, model, SIM_DT);
 ///   control_loop(Box::new(source), Box::new(actuator), None).await?;
 use std::{
+    collections::VecDeque,
     f32::consts::PI,
     sync::{Arc, Mutex},
 };
@@ -31,7 +32,7 @@ use nfe_core::sensors::{LidarCloud, LidarPoint, SensorSnapshot};
 use crate::{
     model::{ControlCommand, VehicleModel, VehicleState},
     noise::SensorNoise,
-    world::World,
+    world::{VehicleFootprintParams, World},
 };
 
 // ── Configuration ──────────────────────────────────────────────────────────
@@ -46,6 +47,52 @@ const SONAR_DIRECTIONS: [f32; 3] = [0.0, 0.52, -0.52]; // front, front-left, fro
 
 type CmdCell = Arc<Mutex<ControlCommand>>;
 
+#[derive(Clone, Copy, Debug, serde::Deserialize, serde::Serialize)]
+#[serde(default)]
+pub struct LatencyParams {
+    /// Delay between command publication and model application.
+    pub latency_us: u64,
+}
+
+impl Default for LatencyParams {
+    fn default() -> Self {
+        Self { latency_us: 0 }
+    }
+}
+
+#[derive(Debug)]
+struct LatencyBuffer {
+    queue: VecDeque<(ControlCommand, u64)>,
+    latency_us: u64,
+}
+
+impl LatencyBuffer {
+    fn new(params: LatencyParams) -> Self {
+        Self {
+            queue: VecDeque::new(),
+            latency_us: params.latency_us,
+        }
+    }
+
+    fn push(&mut self, cmd: ControlCommand, now_us: u64) {
+        self.queue
+            .push_back((cmd, now_us.saturating_add(self.latency_us)));
+    }
+
+    fn poll_due(&mut self, now_us: u64) -> Option<ControlCommand> {
+        let mut latest = None;
+        while self
+            .queue
+            .front()
+            .map(|(_, apply_at_us)| *apply_at_us <= now_us)
+            .unwrap_or(false)
+        {
+            latest = self.queue.pop_front().map(|(cmd, _)| cmd);
+        }
+        latest
+    }
+}
+
 // ── SimulatorSource ────────────────────────────────────────────────────────
 
 pub struct SimulatorSource {
@@ -53,6 +100,9 @@ pub struct SimulatorSource {
     model: Box<dyn VehicleModel>,
     state: VehicleState,
     cmd: CmdCell,
+    applied_cmd: ControlCommand,
+    latency: LatencyBuffer,
+    footprint: VehicleFootprintParams,
     dt: f32,
     tick_us: u64,
     noise: SensorNoise,
@@ -66,7 +116,47 @@ impl SimulatorSource {
     /// Returns `(source, actuator)` — give source to the control loop, actuator
     /// replaces `ActuatorFactory::build()` output.
     pub fn new(world: World, model: Box<dyn VehicleModel>, dt: f32) -> (Self, SimActuator) {
-        Self::new_with_noise(world, model, dt, SensorNoise::default())
+        Self::new_with_noise_latency_and_footprint(
+            world,
+            model,
+            dt,
+            SensorNoise::default(),
+            LatencyParams::default(),
+            VehicleFootprintParams::default(),
+        )
+    }
+
+    pub fn new_with_latency(
+        world: World,
+        model: Box<dyn VehicleModel>,
+        dt: f32,
+        latency: LatencyParams,
+    ) -> (Self, SimActuator) {
+        Self::new_with_noise_latency_and_footprint(
+            world,
+            model,
+            dt,
+            SensorNoise::default(),
+            latency,
+            VehicleFootprintParams::default(),
+        )
+    }
+
+    pub fn new_with_latency_and_footprint(
+        world: World,
+        model: Box<dyn VehicleModel>,
+        dt: f32,
+        latency: LatencyParams,
+        footprint: VehicleFootprintParams,
+    ) -> (Self, SimActuator) {
+        Self::new_with_noise_latency_and_footprint(
+            world,
+            model,
+            dt,
+            SensorNoise::default(),
+            latency,
+            footprint,
+        )
     }
 
     pub fn new_with_seed(
@@ -75,14 +165,58 @@ impl SimulatorSource {
         dt: f32,
         seed: u64,
     ) -> (Self, SimActuator) {
-        Self::new_with_noise(world, model, dt, SensorNoise::with_seed(seed))
+        Self::new_with_noise_latency_and_footprint(
+            world,
+            model,
+            dt,
+            SensorNoise::with_seed(seed),
+            LatencyParams::default(),
+            VehicleFootprintParams::default(),
+        )
     }
 
-    fn new_with_noise(
+    pub fn new_with_seed_and_latency(
+        world: World,
+        model: Box<dyn VehicleModel>,
+        dt: f32,
+        seed: u64,
+        latency: LatencyParams,
+    ) -> (Self, SimActuator) {
+        Self::new_with_noise_latency_and_footprint(
+            world,
+            model,
+            dt,
+            SensorNoise::with_seed(seed),
+            latency,
+            VehicleFootprintParams::default(),
+        )
+    }
+
+    pub fn new_with_seed_latency_and_footprint(
+        world: World,
+        model: Box<dyn VehicleModel>,
+        dt: f32,
+        seed: u64,
+        latency: LatencyParams,
+        footprint: VehicleFootprintParams,
+    ) -> (Self, SimActuator) {
+        Self::new_with_noise_latency_and_footprint(
+            world,
+            model,
+            dt,
+            SensorNoise::with_seed(seed),
+            latency,
+            footprint,
+        )
+    }
+
+    fn new_with_noise_latency_and_footprint(
         world: World,
         model: Box<dyn VehicleModel>,
         dt: f32,
         noise: SensorNoise,
+        latency: LatencyParams,
+        footprint: VehicleFootprintParams,
     ) -> (Self, SimActuator) {
         let start = VehicleState {
             x: world.start.x,
@@ -97,6 +231,9 @@ impl SimulatorSource {
             model,
             state: start,
             cmd,
+            applied_cmd: ControlCommand::default(),
+            latency: LatencyBuffer::new(latency),
+            footprint,
             dt,
             tick_us: (dt * 1_000_000.0) as u64,
             noise,
@@ -110,8 +247,12 @@ impl SimulatorSource {
     // ── Physics step ───────────────────────────────────────────────────────
 
     fn step(&mut self) {
-        let cmd = *self.cmd.lock().unwrap();
-        self.state = self.model.step(&self.state, &cmd, self.dt);
+        let requested = *self.cmd.lock().unwrap();
+        self.latency.push(requested, self.sim_us);
+        if let Some(cmd) = self.latency.poll_due(self.sim_us) {
+            self.applied_cmd = cmd;
+        }
+        self.state = self.model.step(&self.state, &self.applied_cmd, self.dt);
         self.sim_us += self.tick_us;
     }
 
@@ -128,12 +269,13 @@ impl SimulatorSource {
                 // ±45° front
                 1.0_f32.to_radians()
             } else if angle.abs() <= PI / 2.0 {
-                5.0_f32.to_radians()
+                1.0_f32.to_radians()
             } else {
                 10.0_f32.to_radians()
             };
 
-            // World-frame ray direction
+            // World-frame ray direction. Simulated angles use the standard
+            // car-local convention: +x forward, +y left, positive yaw left.
             let world_angle = self.state.yaw_rad + angle;
             let dist_clean =
                 self.world
@@ -142,7 +284,7 @@ impl SimulatorSource {
             if dist_clean < DIST_MAX_M {
                 let dist_m = self.noise.lidar(dist_clean);
                 let x = dist_m * angle.cos();
-                let y = -dist_m * angle.sin(); // car frame: +y left, -sin
+                let y = dist_m * angle.sin();
                 points.push(LidarPoint {
                     x,
                     y,
@@ -175,10 +317,12 @@ impl SimulatorSource {
     }
 
     fn synthesize_imu(&mut self) -> ImuSample {
-        // az ≈ 9.81 (flat), gz from yaw_rate
+        // The estimators consume body-frame acceleration derivatives, so the
+        // simulator publishes the model acceleration rather than wall-frame
+        // finite differences.
         ImuSample {
-            ax: self.noise.imu_accel(0.0),
-            ay: self.noise.imu_accel(0.0),
+            ax: self.noise.imu_accel(self.state.ax),
+            ay: self.noise.imu_accel(self.state.ay),
             az: self.noise.imu_accel(9.806),
             gx: 0.0,
             gy: 0.0,
@@ -190,11 +334,12 @@ impl SimulatorSource {
     // ── Crash detection ────────────────────────────────────────────────────
 
     fn is_crashed(&self) -> bool {
-        // Crashed if any wall closer than 0.05 m in any direction
-
-        self.world
-            .distance_to_closest_wall(self.state.x, self.state.y)
-            < 0.05
+        self.world.footprint_intersects_wall(
+            self.state.x,
+            self.state.y,
+            self.state.yaw_rad,
+            self.footprint,
+        )
     }
 }
 
@@ -240,7 +385,11 @@ impl SimulatorSource {
     }
 
     pub fn command(&self) -> ControlCommand {
-        *self.cmd.lock().unwrap()
+        self.applied_cmd
+    }
+
+    pub fn footprint(&self) -> VehicleFootprintParams {
+        self.footprint
     }
 
     pub fn timestamp_us(&self) -> u64 {
@@ -272,5 +421,115 @@ impl ActuatorSink for SimActuator {
         c.throttle = 0.0;
         c.steering_rad = 0.0;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rstar::RTree;
+
+    #[test]
+    fn simulated_lidar_uses_positive_y_for_left_side_returns() {
+        let world = World {
+            inner_walls: RTree::bulk_load(vec![crate::world::Seg {
+                ax: -2.0,
+                ay: 1.0,
+                bx: 2.0,
+                by: 1.0,
+            }]),
+            outer_walls: RTree::new(),
+            start: crate::world::StartPose {
+                x: 0.0,
+                y: 0.0,
+                yaw_rad: 0.0,
+            },
+            waypoints: Vec::new(),
+        };
+        let (mut source, _actuator) = SimulatorSource::new_with_noise_latency_and_footprint(
+            world,
+            Box::new(crate::model::KinematicBicycle::default()),
+            0.01,
+            SensorNoise::zero(),
+            LatencyParams::default(),
+            VehicleFootprintParams::default(),
+        );
+
+        let cloud = source.synthesize_lidar();
+        let left_return = cloud
+            .points
+            .iter()
+            .find(|p| p.x.abs() < 0.1 && p.y > 0.9)
+            .expect("expected wall return on the left side");
+        assert!(left_return.y > 0.0);
+    }
+
+    #[test]
+    fn footprint_collision_catches_wall_before_center_hits() {
+        let world = World {
+            inner_walls: RTree::bulk_load(vec![crate::world::Seg {
+                ax: -1.0,
+                ay: 0.20,
+                bx: 1.0,
+                by: 0.20,
+            }]),
+            outer_walls: RTree::new(),
+            start: crate::world::StartPose {
+                x: 0.0,
+                y: 0.0,
+                yaw_rad: 0.0,
+            },
+            waypoints: Vec::new(),
+        };
+        let (source, _actuator) = SimulatorSource::new_with_noise_latency_and_footprint(
+            world,
+            Box::new(crate::model::KinematicBicycle::default()),
+            0.01,
+            SensorNoise::zero(),
+            LatencyParams::default(),
+            VehicleFootprintParams {
+                length_m: 0.40,
+                width_m: 0.50,
+            },
+        );
+
+        assert!(source.is_crashed());
+    }
+
+    #[test]
+    fn command_latency_delays_model_application() {
+        let world = World {
+            inner_walls: RTree::new(),
+            outer_walls: RTree::new(),
+            start: crate::world::StartPose {
+                x: 0.0,
+                y: 0.0,
+                yaw_rad: 0.0,
+            },
+            waypoints: Vec::new(),
+        };
+        let (mut source, mut actuator) = SimulatorSource::new_with_noise_latency_and_footprint(
+            world,
+            Box::new(crate::model::KinematicBicycle::default()),
+            0.01,
+            SensorNoise::zero(),
+            LatencyParams { latency_us: 20_000 },
+            VehicleFootprintParams::default(),
+        );
+
+        actuator
+            .apply(&ControlOutput {
+                throttle: 1.0,
+                steering_rad: 0.2,
+                ..ControlOutput::default()
+            })
+            .unwrap();
+
+        source.step();
+        assert_eq!(source.command().throttle, 0.0);
+        source.step();
+        assert_eq!(source.command().throttle, 0.0);
+        source.step();
+        assert_eq!(source.command().throttle, 1.0);
     }
 }

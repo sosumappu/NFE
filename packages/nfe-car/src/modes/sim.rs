@@ -9,7 +9,7 @@ use nfe_runtime::{
     telemetry_bus::{TelemetryBus, TelemetrySink},
 };
 use nfe_sim::{
-    telemetry::{ground_truth_event, world_snapshot_event},
+    telemetry::{ground_truth_event_with_footprint, world_snapshot_event},
     DynamicBicycle, IdentifiedModel, KinematicBicycle, SimActuator, SimulatorSource, VehicleModel,
     World,
 };
@@ -36,22 +36,35 @@ pub async fn run(world_path: String, args: &Args, config: &Config) -> Result<()>
     );
 
     let model: Box<dyn VehicleModel> = match args.model.as_str() {
-        "dynamic" => Box::new(DynamicBicycle::default()),
+        "dynamic" => Box::new(DynamicBicycle::from_params(config.sim.dynamic)),
         "identified" => {
             let p = args
                 .model_params
                 .as_deref()
                 .ok_or_else(|| anyhow::anyhow!("--model-params required"))?;
-            Box::new(IdentifiedModel::from_json(p)?)
+            Box::new(IdentifiedModel::from_json_with_base(p, config.sim.dynamic)?)
         }
-        _ => Box::new(KinematicBicycle::default()),
+        _ => Box::new(KinematicBicycle::from_params(config.sim.kinematic)),
     };
 
     let (source, actuator) = if let Some(seed) = args.sim_seed {
         info!(seed, "sim: deterministic noise seed");
-        SimulatorSource::new_with_seed(world, model, config.control_dt(), seed)
+        SimulatorSource::new_with_seed_latency_and_footprint(
+            world,
+            model,
+            config.control_dt(),
+            seed,
+            config.sim.latency,
+            config.sim.footprint,
+        )
     } else {
-        SimulatorSource::new(world, model, config.control_dt())
+        SimulatorSource::new_with_latency_and_footprint(
+            world,
+            model,
+            config.control_dt(),
+            config.sim.latency,
+            config.sim.footprint,
+        )
     };
 
     let bus = TelemetryBus::new();
@@ -134,10 +147,11 @@ impl SensorSource for SimSourceAdapter {
             let reason = self.inner.exhaustion_reason().unwrap_or("sim exhausted");
             anyhow::bail!("{reason}");
         };
-        self.pending_events.push(ground_truth_event(
+        self.pending_events.push(ground_truth_event_with_footprint(
             self.inner.vehicle_state(),
             self.inner.command(),
             self.inner.timestamp_us(),
+            self.inner.footprint(),
         ));
         Ok(from_core_snapshot(snapshot))
     }

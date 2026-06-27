@@ -9,20 +9,92 @@ estop_dist_m = 0.30
 lqr = [0.80, 0.30, 1.20, 0.40]
 
 [control.speed]
-v_max = 1.0
+v_max = 10
 # greater = more speed linear k_dist * dist_to_waypoint
-k_dist = 1.0
+k_lateral = 1.0
 # greater = less speed 1 - k_heading * steering^2
-k_heading = 1.0
+k_heading = 5
+obstacle_slowdown_m = 2.8
 
 [control.pid]
-kp = 1.5  # proportional factor
-ki = 0.05 # integral factor
-kd = 0.2  # derivative factor
+kp = 1.8           # proportional factor
+ki = 0.15          # integral factor
+kd = 0.4           # derivative factor
+windup_limit = 0.0
+max_throttle = 1.0 # WARN: put pid to 0.2 on live tests
 
+[control.stanley]
+k_cross_track = 2.5
+softening_speed_ms = 1.0
+max_steering_rad = 0.45
+
+[control.perception]
+mode = "apex"
+
+[control.perception.ransac]
+inlier_dist_m = 0.12
+min_inliers = 13
+iterations = 80
+max_walls = 4
+min_pair_sep_m = 0.1
+
+[control.perception.apex]
+median_window = 3
+min_points = 4
+min_forward_m = 0.5
+min_range_jump_m = 0.15
+max_opposite_dist_error_m = 0.05
+max_lookahead_m = 7.0
+min_lookahead_m = 0.5
+lookahead_sensitivity = 1.0
+side_lookahead_fov_deg = 30.0
+side_lookahead_center_deg = 80.0
 
 [live]
 lidar_port = "/dev/lidar"
+
+[sim]
+length_m = 0.42
+width_m = 0.26
+
+[sim.kinematic]
+wheelbase_m = 0.21
+motor_gain_ms2 = 8.0
+drag_k = 0.5
+accel_max_ms2 = 15.0
+
+[sim.dynamic]
+wheelbase_m = 0.21
+lf_m = 0.105
+lr_m = 0.105
+mass_kg = 1.520
+iz_kg_m2 = 0.01465
+cf_n_per_rad = 12.0
+cr_n_per_rad = 10.0
+motor_gain_ms2 = 20
+drag_k = 0.5
+accel_max_ms2 = 20.0
+
+[sim.dynamic.servo]
+tau_s = 0.05
+rate_limit_rad_s = 5.5
+backlash_rad = 0.01
+
+[sim.dynamic.motor]
+tau_s = 0.03
+deadband = 0.05
+brake_gain = 1.4
+
+[sim.dynamic.tyre]
+mu = 1.2
+pacejka_shape = 1.3
+saturating = true
+
+[sim.dynamic.chassis]
+cg_height_m = 0.06
+
+[sim.latency]
+latency_us = 0
 
 [start_gate]
 udp_bind = "0.0.0.0"

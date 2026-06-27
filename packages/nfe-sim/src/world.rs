@@ -1,5 +1,5 @@
 use rstar::{PointDistance, RTree, RTreeObject, AABB};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 /// sim/world.rs — Static world representation (walls as line segments)
 ///
 /// Loaded from a JSON file produced by your coworker's Python map tool:
@@ -49,6 +49,30 @@ impl Seg {
 }
 
 // ── World ──────────────────────────────────────────────────────────────────
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VehicleFootprintParams {
+    /// Full vehicle footprint length [m], measured nose-to-tail.
+    pub length_m: f32,
+    /// Full vehicle footprint width [m], measured at the widest point.
+    pub width_m: f32,
+}
+
+impl Default for VehicleFootprintParams {
+    fn default() -> Self {
+        Self {
+            length_m: 0.42,
+            width_m: 0.26,
+        }
+    }
+}
+
+impl VehicleFootprintParams {
+    fn half_extents(self) -> (f32, f32) {
+        (0.5 * self.length_m.max(0.0), 0.5 * self.width_m.max(0.0))
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct StartPose {
@@ -211,6 +235,40 @@ impl World {
         closest
     }
 
+    /// Collision test between an oriented rectangular vehicle footprint and walls.
+    pub fn footprint_intersects_wall(
+        &self,
+        x: f32,
+        y: f32,
+        yaw_rad: f32,
+        footprint: VehicleFootprintParams,
+    ) -> bool {
+        let (half_len, half_width) = footprint.half_extents();
+        if half_len <= 0.0 || half_width <= 0.0 {
+            return false;
+        }
+
+        let corners = footprint_corners(x, y, yaw_rad, half_len, half_width);
+        let (min_x, max_x) = corners
+            .iter()
+            .map(|p| p[0])
+            .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), v| {
+                (lo.min(v), hi.max(v))
+            });
+        let (min_y, max_y) = corners
+            .iter()
+            .map(|p| p[1])
+            .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), v| {
+                (lo.min(v), hi.max(v))
+            });
+        let envelope = AABB::from_corners([min_x, min_y], [max_x, max_y]);
+
+        self.inner_walls
+            .locate_in_envelope_intersecting(envelope)
+            .chain(self.outer_walls.locate_in_envelope_intersecting(envelope))
+            .any(|seg| segment_intersects_footprint(*seg, x, y, yaw_rad, half_len, half_width))
+    }
+
     /// Index of the next waypoint ahead of `pos`, or None if list is empty.
     pub fn next_waypoint(&self, _pos: (f32, f32), last_reached: usize) -> Option<usize> {
         if self.waypoints.is_empty() {
@@ -238,4 +296,82 @@ impl World {
 
         inner_dist.min(outer_dist)
     }
+}
+
+fn footprint_corners(
+    x: f32,
+    y: f32,
+    yaw_rad: f32,
+    half_len: f32,
+    half_width: f32,
+) -> [[f32; 2]; 4] {
+    let (sy, cy) = yaw_rad.sin_cos();
+    let local = [
+        [half_len, half_width],
+        [half_len, -half_width],
+        [-half_len, -half_width],
+        [-half_len, half_width],
+    ];
+    local.map(|[lx, ly]| [x + lx * cy - ly * sy, y + lx * sy + ly * cy])
+}
+
+fn segment_intersects_footprint(
+    seg: Seg,
+    x: f32,
+    y: f32,
+    yaw_rad: f32,
+    half_len: f32,
+    half_width: f32,
+) -> bool {
+    let (sy, cy) = yaw_rad.sin_cos();
+    let a = world_to_vehicle(seg.ax, seg.ay, x, y, sy, cy);
+    let b = world_to_vehicle(seg.bx, seg.by, x, y, sy, cy);
+    segment_intersects_aabb(a[0], a[1], b[0], b[1], half_len, half_width)
+}
+
+fn world_to_vehicle(px: f32, py: f32, x: f32, y: f32, sy: f32, cy: f32) -> [f32; 2] {
+    let dx = px - x;
+    let dy = py - y;
+    [dx * cy + dy * sy, -dx * sy + dy * cy]
+}
+
+fn segment_intersects_aabb(
+    ax: f32,
+    ay: f32,
+    bx: f32,
+    by: f32,
+    half_len: f32,
+    half_width: f32,
+) -> bool {
+    let dx = bx - ax;
+    let dy = by - ay;
+    let mut t0 = 0.0;
+    let mut t1 = 1.0;
+    clip_segment(-dx, ax + half_len, &mut t0, &mut t1)
+        && clip_segment(dx, half_len - ax, &mut t0, &mut t1)
+        && clip_segment(-dy, ay + half_width, &mut t0, &mut t1)
+        && clip_segment(dy, half_width - ay, &mut t0, &mut t1)
+}
+
+fn clip_segment(p: f32, q: f32, t0: &mut f32, t1: &mut f32) -> bool {
+    if p.abs() < 1e-9 {
+        return q >= 0.0;
+    }
+    let r = q / p;
+    if p < 0.0 {
+        if r > *t1 {
+            return false;
+        }
+        if r > *t0 {
+            *t0 = r;
+        }
+    } else {
+        if r < *t0 {
+            return false;
+        }
+        if r < *t1 {
+            *t1 = r;
+        }
+    }
+    true
 }

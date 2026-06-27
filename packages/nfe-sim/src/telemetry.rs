@@ -1,11 +1,11 @@
 use nfe_core::telemetry::{
-    GroundTruthStateTelemetry, GroundTruthTelemetry, TelemetryEvent, WallKind,
-    WallSegmentTelemetry, WorldSnapshotTelemetry, WorldTelemetry,
+    GroundTruthStateTelemetry, GroundTruthTelemetry, TelemetryEvent, VehicleFootprintTelemetry,
+    WallKind, WallSegmentTelemetry, WorldSnapshotTelemetry, WorldTelemetry,
 };
 use nfe_core::{Point2, Pose2};
 
 use crate::model::{ControlCommand, VehicleState};
-use crate::world::World;
+use crate::world::{VehicleFootprintParams, World};
 
 pub fn world_snapshot_event(world: &World, timestamp_us: u64) -> TelemetryEvent {
     TelemetryEvent::World(WorldTelemetry::Snapshot(WorldSnapshotTelemetry {
@@ -31,6 +31,24 @@ pub fn ground_truth_event(
     command: ControlCommand,
     timestamp_us: u64,
 ) -> TelemetryEvent {
+    ground_truth_event_inner(state, command, timestamp_us, None)
+}
+
+pub fn ground_truth_event_with_footprint(
+    state: VehicleState,
+    command: ControlCommand,
+    timestamp_us: u64,
+    footprint: VehicleFootprintParams,
+) -> TelemetryEvent {
+    ground_truth_event_inner(state, command, timestamp_us, Some(footprint))
+}
+
+fn ground_truth_event_inner(
+    state: VehicleState,
+    command: ControlCommand,
+    timestamp_us: u64,
+    footprint: Option<VehicleFootprintParams>,
+) -> TelemetryEvent {
     TelemetryEvent::GroundTruth(GroundTruthTelemetry::State(GroundTruthStateTelemetry {
         timestamp_us,
         frame_id: "map".to_string(),
@@ -44,6 +62,10 @@ pub fn ground_truth_event(
         yaw_rate_rad_s: state.yaw_rate,
         steering_rad: command.steering_rad,
         throttle: command.throttle,
+        footprint: footprint.map(|f| VehicleFootprintTelemetry {
+            length_m: f.length_m,
+            width_m: f.width_m,
+        }),
     }))
 }
 

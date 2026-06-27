@@ -16,10 +16,10 @@ use mcap::{records::MessageHeader, Writer};
 use nfe_core::estimation::StateEstimate;
 use nfe_core::sensors::SensorSnapshot;
 use nfe_core::telemetry::{
-    EstimationTelemetry, EstimationTelemetryKind, GroundTruthTelemetry, LocalizationTelemetry,
-    LocalizationTelemetryKind, MappingTelemetry, MappingTelemetryKind, PerceptionTelemetry,
-    PerceptionTelemetryKind, PlanningTelemetry, PlanningTelemetryKind, RaceTelemetry,
-    RaceTelemetryKind, SensorTelemetry, StartGateTelemetry, SupervisorTelemetry,
+    ApexFrame, EstimationTelemetry, EstimationTelemetryKind, GroundTruthTelemetry,
+    LocalizationTelemetry, LocalizationTelemetryKind, MappingTelemetry, MappingTelemetryKind,
+    PerceptionTelemetry, PerceptionTelemetryKind, PlanningTelemetry, PlanningTelemetryKind,
+    RaceTelemetry, RaceTelemetryKind, SensorTelemetry, StartGateTelemetry, SupervisorTelemetry,
     SupervisorTelemetryKind, TelemetryEvent, TelemetryTopic, WallKind, WorldTelemetry,
 };
 use prost::Message;
@@ -87,6 +87,18 @@ struct TopicSpec {
 
 const TOPICS: &[TopicSpec] = &[
     TopicSpec {
+        topic: TelemetryTopic::Tf,
+        encoding: TopicEncoding::FoxgloveProtobuf {
+            schema_name: "foxglove.FrameTransforms",
+        },
+    },
+    TopicSpec {
+        topic: TelemetryTopic::TfStatic,
+        encoding: TopicEncoding::FoxgloveProtobuf {
+            schema_name: "foxglove.FrameTransforms",
+        },
+    },
+    TopicSpec {
         topic: TelemetryTopic::SensorImu,
         encoding: TopicEncoding::Json,
     },
@@ -105,6 +117,12 @@ const TOPICS: &[TopicSpec] = &[
         encoding: TopicEncoding::Json,
     },
     TopicSpec {
+        topic: TelemetryTopic::ControlScene,
+        encoding: TopicEncoding::FoxgloveProtobuf {
+            schema_name: "foxglove.SceneUpdate",
+        },
+    },
+    TopicSpec {
         topic: TelemetryTopic::ControlMetrics,
         encoding: TopicEncoding::Json,
     },
@@ -121,7 +139,17 @@ const TOPICS: &[TopicSpec] = &[
         encoding: TopicEncoding::Json,
     },
     TopicSpec {
+        topic: TelemetryTopic::PerceptionReactiveScene,
+        encoding: TopicEncoding::FoxgloveProtobuf {
+            schema_name: "foxglove.SceneUpdate",
+        },
+    },
+    TopicSpec {
         topic: TelemetryTopic::PerceptionReactiveRansacWalls,
+        encoding: TopicEncoding::Json,
+    },
+    TopicSpec {
+        topic: TelemetryTopic::PerceptionReactiveApex,
         encoding: TopicEncoding::Json,
     },
     TopicSpec {
@@ -218,11 +246,20 @@ const TOPICS: &[TopicSpec] = &[
             schema_name: "foxglove.PosesInFrame",
         },
     },
+    TopicSpec {
+        topic: TelemetryTopic::SimGroundTruthFootprint,
+        encoding: TopicEncoding::FoxgloveProtobuf {
+            schema_name: "foxglove.SceneUpdate",
+        },
+    },
 ];
 
 fn mcap_loop(mut file_writer: BufWriter<File>, rx: TelemetryReceiver, path: String) {
     let mut writer = Writer::new(&mut file_writer).expect("failed to init mcap writer");
     let channels = register_topics(&mut writer);
+    if let Err(e) = write_static_transforms(&mut writer, &channels) {
+        warn!(error = %e, "mcap sink static transform write failed");
+    }
     let mut frames = 0u64;
     let mut last_log = Instant::now();
 
@@ -288,13 +325,7 @@ fn write_event<W: std::io::Write + std::io::Seek>(
         TelemetryEvent::Sensor(SensorTelemetry::Snapshot(snapshot)) => {
             write_sensor_snapshot(writer, channels, snapshot)
         }
-        TelemetryEvent::Control(e) => write_json(
-            writer,
-            channels,
-            TelemetryTopic::ControlCommand,
-            e.timestamp_us,
-            e,
-        ),
+        TelemetryEvent::Control(e) => write_control(writer, channels, e),
         TelemetryEvent::Metrics(e) => write_json(
             writer,
             channels,
@@ -313,6 +344,21 @@ fn write_event<W: std::io::Write + std::io::Seek>(
         TelemetryEvent::GroundTruth(e) => write_ground_truth(writer, channels, e),
         TelemetryEvent::StartGate(e) => write_start_gate(writer, channels, e),
     }
+}
+
+fn write_control<W: std::io::Write + std::io::Seek>(
+    writer: &mut Writer<W>,
+    channels: &HashMap<&'static str, u16>,
+    e: &nfe_core::telemetry::ControlTelemetry,
+) -> Result<()> {
+    write_json(
+        writer,
+        channels,
+        TelemetryTopic::ControlCommand,
+        e.timestamp_us,
+        e,
+    )?;
+    write_control_scene(writer, channels, e)
 }
 
 fn write_start_gate<W: std::io::Write + std::io::Seek>(
@@ -378,13 +424,26 @@ fn write_perception<W: std::io::Write + std::io::Seek>(
             e.timestamp_us,
             v,
         ),
-        PerceptionTelemetryKind::ReactiveRansacWalls(v) => write_json(
-            writer,
-            channels,
-            TelemetryTopic::PerceptionReactiveRansacWalls,
-            e.timestamp_us,
-            v,
-        ),
+        PerceptionTelemetryKind::ReactiveRansacWalls(v) => {
+            write_json(
+                writer,
+                channels,
+                TelemetryTopic::PerceptionReactiveRansacWalls,
+                e.timestamp_us,
+                v,
+            )?;
+            write_ransac_scene(writer, channels, e.timestamp_us, v)
+        }
+        PerceptionTelemetryKind::ReactiveApex(v) => {
+            write_json(
+                writer,
+                channels,
+                TelemetryTopic::PerceptionReactiveApex,
+                e.timestamp_us,
+                v,
+            )?;
+            write_apex_scene(writer, channels, e.timestamp_us, v)
+        }
         PerceptionTelemetryKind::MappingRansacWalls(v) => write_json(
             writer,
             channels,
@@ -571,6 +630,155 @@ fn write_race<W: std::io::Write + std::io::Seek>(
     }
 }
 
+fn write_control_scene<W: std::io::Write + std::io::Seek>(
+    writer: &mut Writer<W>,
+    channels: &HashMap<&'static str, u16>,
+    e: &nfe_core::telemetry::ControlTelemetry,
+) -> Result<()> {
+    let steering = e.output.steering_rad;
+    let saturation = (steering.abs() / 0.70).clamp(0.0, 1.0);
+    let msg = pb_fg::SceneUpdate {
+        entities: vec![pb_fg::SceneEntity {
+            id: "control".to_string(),
+            timestamp: Some(timestamp(e.timestamp_us)),
+            frame_id: "base_link".to_string(),
+            frame_locked: 1,
+            lines: Vec::new(),
+            arrows: vec![pb_fg::ArrowPrimitive {
+                pose: Some(pose_xyz_yaw(0.15, 0.0, 0.05, steering)),
+                shaft_length: 0.35,
+                shaft_diameter: 0.025,
+                head_length: 0.12,
+                head_diameter: 0.08,
+                color: Some(color(saturation, 1.0 - saturation, 0.1, 0.9)),
+            }],
+            spheres: Vec::new(),
+        }],
+        deletions: Vec::new(),
+    };
+    write_protobuf(
+        writer,
+        channels,
+        TelemetryTopic::ControlScene,
+        e.timestamp_us,
+        &msg,
+    )
+}
+
+fn write_ransac_scene<W: std::io::Write + std::io::Seek>(
+    writer: &mut Writer<W>,
+    channels: &HashMap<&'static str, u16>,
+    timestamp_us: u64,
+    frame: &nfe_core::telemetry::RansacWallFitFrame,
+) -> Result<()> {
+    let mut lines = Vec::with_capacity(frame.walls.len());
+    for wall in &frame.walls {
+        let mid_y = 0.5 * (wall.p0.y + wall.p1.y);
+        let wall_color = if mid_y >= 0.0 {
+            color(0.1, 0.5, 1.0, 0.9)
+        } else {
+            color(1.0, 0.55, 0.1, 0.9)
+        };
+        lines.push(line_primitive(
+            vec![
+                vector(wall.p0.x, wall.p0.y, 0.02),
+                vector(wall.p1.x, wall.p1.y, 0.02),
+            ],
+            0.01 + 0.03 * f64::from(wall.support.clamp(0.0, 1.0)),
+            wall_color,
+        ));
+    }
+
+    let msg = pb_fg::SceneUpdate {
+        entities: vec![pb_fg::SceneEntity {
+            id: "reactive_perception".to_string(),
+            timestamp: Some(timestamp(timestamp_us)),
+            frame_id: frame.frame_id.clone(),
+            frame_locked: 1,
+            lines,
+            arrows: Vec::new(),
+            spheres: Vec::new(),
+        }],
+        deletions: Vec::new(),
+    };
+    write_protobuf(
+        writer,
+        channels,
+        TelemetryTopic::PerceptionReactiveScene,
+        timestamp_us,
+        &msg,
+    )
+}
+
+fn write_apex_scene<W: std::io::Write + std::io::Seek>(
+    writer: &mut Writer<W>,
+    channels: &HashMap<&'static str, u16>,
+    timestamp_us: u64,
+    frame: &ApexFrame,
+) -> Result<()> {
+    let lines = vec![
+        line_primitive(
+            vec![
+                vector(frame.apex.x, frame.apex.y, 0.04),
+                vector(frame.opposite.x, frame.opposite.y, 0.04),
+            ],
+            0.02,
+            color(1.0, 0.85, 0.1, 0.95),
+        ),
+        line_primitive(
+            vec![
+                vector(0.0, 0.0, 0.06),
+                vector(frame.target.x, frame.target.y, 0.06),
+            ],
+            0.025,
+            color(0.1, 1.0, 0.2, 0.95),
+        ),
+    ];
+    let spheres = vec![
+        sphere(
+            frame.apex.x,
+            frame.apex.y,
+            0.07,
+            0.14,
+            color(1.0, 0.1, 0.1, 0.95),
+        ),
+        sphere(
+            frame.opposite.x,
+            frame.opposite.y,
+            0.07,
+            0.14,
+            color(0.1, 0.45, 1.0, 0.95),
+        ),
+        sphere(
+            frame.target.x,
+            frame.target.y,
+            0.09,
+            0.16,
+            color(0.1, 1.0, 0.2, 0.95),
+        ),
+    ];
+
+    let msg = pb_fg::SceneUpdate {
+        entities: vec![pb_fg::SceneEntity {
+            id: "reactive_perception".to_string(),
+            timestamp: Some(timestamp(timestamp_us)),
+            frame_id: frame.frame_id.clone(),
+            frame_locked: 1,
+            lines,
+            arrows: Vec::new(),
+            spheres,
+        }],
+        deletions: Vec::new(),
+    };
+    write_protobuf(
+        writer,
+        channels,
+        TelemetryTopic::PerceptionReactiveScene,
+        timestamp_us,
+        &msg,
+    )
+}
+
 fn write_world<W: std::io::Write + std::io::Seek>(
     writer: &mut Writer<W>,
     channels: &HashMap<&'static str, u16>,
@@ -588,6 +796,27 @@ fn write_world<W: std::io::Write + std::io::Seek>(
             write_world_walls(writer, channels, v)
         }
     }
+}
+
+fn write_static_transforms<W: std::io::Write + std::io::Seek>(
+    writer: &mut Writer<W>,
+    channels: &HashMap<&'static str, u16>,
+) -> Result<()> {
+    let msg = pb_fg::FrameTransforms {
+        transforms: vec![pb_fg::FrameTransform {
+            timestamp: Some(timestamp(0)),
+            parent_frame_id: "base_link".to_string(),
+            child_frame_id: "lidar".to_string(),
+            translation: Some(vector(0.0, 0.0, 0.0)),
+            rotation: Some(pb_fg::Quaternion {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+                w: 1.0,
+            }),
+        }],
+    };
+    write_protobuf(writer, channels, TelemetryTopic::TfStatic, 0, &msg)
 }
 
 fn write_ground_truth<W: std::io::Write + std::io::Seek>(
@@ -622,9 +851,73 @@ fn write_ground_truth<W: std::io::Write + std::io::Seek>(
                 v.timestamp_us,
                 &v.frame_id,
                 estimate,
-            )
+            )?;
+            write_ground_truth_transform(writer, channels, v)?;
+            if let Some(footprint) = v.footprint {
+                write_ground_truth_footprint(writer, channels, v.timestamp_us, footprint)?;
+            }
+            Ok(())
         }
     }
+}
+
+fn write_ground_truth_transform<W: std::io::Write + std::io::Seek>(
+    writer: &mut Writer<W>,
+    channels: &HashMap<&'static str, u16>,
+    ground_truth: &nfe_core::telemetry::GroundTruthStateTelemetry,
+) -> Result<()> {
+    let msg = pb_fg::FrameTransforms {
+        transforms: vec![pb_fg::FrameTransform {
+            timestamp: Some(timestamp(ground_truth.timestamp_us)),
+            parent_frame_id: ground_truth.frame_id.clone(),
+            child_frame_id: "base_link".to_string(),
+            translation: Some(vector(ground_truth.pose.x, ground_truth.pose.y, 0.0)),
+            rotation: Some(yaw_quaternion(ground_truth.pose.yaw)),
+        }],
+    };
+    write_protobuf(
+        writer,
+        channels,
+        TelemetryTopic::Tf,
+        ground_truth.timestamp_us,
+        &msg,
+    )
+}
+
+fn write_ground_truth_footprint<W: std::io::Write + std::io::Seek>(
+    writer: &mut Writer<W>,
+    channels: &HashMap<&'static str, u16>,
+    timestamp_us: u64,
+    footprint: nfe_core::telemetry::VehicleFootprintTelemetry,
+) -> Result<()> {
+    let half_len = 0.5 * footprint.length_m.max(0.0);
+    let half_width = 0.5 * footprint.width_m.max(0.0);
+    let points = vec![
+        vector(half_len, half_width, 0.03),
+        vector(half_len, -half_width, 0.03),
+        vector(-half_len, -half_width, 0.03),
+        vector(-half_len, half_width, 0.03),
+        vector(half_len, half_width, 0.03),
+    ];
+    let msg = pb_fg::SceneUpdate {
+        entities: vec![pb_fg::SceneEntity {
+            id: "sim_vehicle_footprint".to_string(),
+            timestamp: Some(timestamp(timestamp_us)),
+            frame_id: "base_link".to_string(),
+            frame_locked: 1,
+            lines: vec![line_primitive(points, 0.025, color(0.1, 1.0, 0.2, 0.9))],
+            arrows: Vec::new(),
+            spheres: Vec::new(),
+        }],
+        deletions: Vec::new(),
+    };
+    write_protobuf(
+        writer,
+        channels,
+        TelemetryTopic::SimGroundTruthFootprint,
+        timestamp_us,
+        &msg,
+    )
 }
 
 fn write_point_cloud<W: std::io::Write + std::io::Seek>(
@@ -696,6 +989,8 @@ fn write_world_walls<W: std::io::Write + std::io::Seek>(
         frame_id: world.frame_id.clone(),
         frame_locked: 1,
         lines: Vec::new(),
+        arrows: Vec::new(),
+        spheres: Vec::new(),
     };
     for wall in &world.walls {
         let color = match wall.kind {
@@ -737,16 +1032,49 @@ fn timestamp(timestamp_us: u64) -> pb_fg::Timestamp {
     }
 }
 
+fn line_primitive(
+    points: Vec<pb_fg::Vector3>,
+    thickness: f64,
+    color: pb_fg::Color,
+) -> pb_fg::LinePrimitive {
+    pb_fg::LinePrimitive {
+        r#type: 0,
+        pose: Some(pose(nfe_core::Pose2::default())),
+        thickness,
+        scale_invariant_thickness: 0.0,
+        color: Some(color),
+        points,
+        colors: Vec::new(),
+        indices: Vec::new(),
+    }
+}
+
+fn sphere(x: f32, y: f32, z: f32, diameter: f32, color: pb_fg::Color) -> pb_fg::SpherePrimitive {
+    pb_fg::SpherePrimitive {
+        pose: Some(pose_xyz_yaw(x, y, z, 0.0)),
+        size: Some(vector(diameter, diameter, diameter)),
+        color: Some(color),
+    }
+}
+
 fn pose(p: nfe_core::Pose2) -> pb_fg::Pose {
-    let half = 0.5 * p.yaw as f64;
+    pose_xyz_yaw(p.x, p.y, 0.0, p.yaw)
+}
+
+fn pose_xyz_yaw(x: f32, y: f32, z: f32, yaw: f32) -> pb_fg::Pose {
     pb_fg::Pose {
-        position: Some(vector(p.x, p.y, 0.0)),
-        orientation: Some(pb_fg::Quaternion {
-            x: 0.0,
-            y: 0.0,
-            z: half.sin(),
-            w: half.cos(),
-        }),
+        position: Some(vector(x, y, z)),
+        orientation: Some(yaw_quaternion(yaw)),
+    }
+}
+
+fn yaw_quaternion(yaw: f32) -> pb_fg::Quaternion {
+    let half = 0.5 * yaw as f64;
+    pb_fg::Quaternion {
+        x: 0.0,
+        y: 0.0,
+        z: half.sin(),
+        w: half.cos(),
     }
 }
 

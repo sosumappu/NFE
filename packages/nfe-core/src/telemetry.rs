@@ -9,7 +9,7 @@ use crate::localization::LocalizationResult;
 use crate::mapping::{LoopClosureReport, MapStatus, TrackMap};
 use crate::raceline::{RaceLine, RaceReference};
 use crate::sensors::SensorSnapshot;
-use crate::{MotionState, WallLine};
+use crate::{MotionState, Point2, WallLine};
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum TelemetryEvent {
@@ -89,6 +89,7 @@ pub struct MetricsTelemetry {
 pub enum PerceptionTelemetryKind {
     ReactiveCorridor(CorridorEstimate),
     ReactiveRansacWalls(RansacWallFitFrame),
+    ReactiveApex(ApexFrame),
     MappingRansacWalls(RansacWallFitFrame),
 }
 
@@ -112,6 +113,25 @@ pub struct RansacWallFitFrame {
 pub enum WallFitSource {
     Reactive,
     Mapping,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct ApexFrame {
+    pub frame_id: String,
+    pub apex: Point2,
+    pub opposite: Point2,
+    pub target: Point2,
+    pub cartesian_midpoint: Point2,
+    pub apex_range_m: f32,
+    pub opposite_range_m: f32,
+    pub target_range_m: f32,
+    pub apex_angle_rad: f32,
+    pub opposite_angle_rad: f32,
+    pub target_angle_rad: f32,
+    pub range_jump_m: f32,
+    pub derivative_score: f32,
+    pub points_total: u32,
+    pub confidence: f32,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -294,6 +314,14 @@ pub struct GroundTruthStateTelemetry {
     pub yaw_rate_rad_s: f32,
     pub steering_rad: f32,
     pub throttle: f32,
+    #[serde(default)]
+    pub footprint: Option<VehicleFootprintTelemetry>,
+}
+
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
+pub struct VehicleFootprintTelemetry {
+    pub length_m: f32,
+    pub width_m: f32,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -307,15 +335,20 @@ pub struct StartGateTelemetry {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum TelemetryTopic {
+    Tf,
+    TfStatic,
     SensorImu,
     SensorLidar,
     SensorSonar,
     ControlCommand,
+    ControlScene,
     ControlMetrics,
     ControlSafety,
     ControlStartGate,
     PerceptionReactiveCorridor,
+    PerceptionReactiveScene,
     PerceptionReactiveRansacWalls,
+    PerceptionReactiveApex,
     MappingRansacWalls,
     EstimationEkfState,
     EstimationEkfBias,
@@ -337,21 +370,27 @@ pub enum TelemetryTopic {
     WorldWalls,
     SimGroundTruthState,
     SimGroundTruthPose,
+    SimGroundTruthFootprint,
     EstimationEkfPose,
 }
 
 impl TelemetryTopic {
     pub fn as_str(self) -> &'static str {
         match self {
+            TelemetryTopic::Tf => "/tf",
+            TelemetryTopic::TfStatic => "/tf_static",
             TelemetryTopic::SensorImu => "/sensor/imu",
             TelemetryTopic::SensorLidar => "/sensor/lidar",
             TelemetryTopic::SensorSonar => "/sensor/sonar",
             TelemetryTopic::ControlCommand => "/control/command",
+            TelemetryTopic::ControlScene => "/control/scene",
             TelemetryTopic::ControlMetrics => "/control/metrics",
             TelemetryTopic::ControlSafety => "/control/safety",
             TelemetryTopic::ControlStartGate => "/control/start_gate",
             TelemetryTopic::PerceptionReactiveCorridor => "/perception/reactive/corridor",
+            TelemetryTopic::PerceptionReactiveScene => "/perception/reactive/scene",
             TelemetryTopic::PerceptionReactiveRansacWalls => "/perception/reactive/ransac_walls",
+            TelemetryTopic::PerceptionReactiveApex => "/perception/reactive/apex",
             TelemetryTopic::MappingRansacWalls => "/mapping/ransac_walls",
             TelemetryTopic::EstimationEkfState => "/estimation/ekf/state",
             TelemetryTopic::EstimationEkfBias => "/estimation/ekf/bias",
@@ -373,6 +412,7 @@ impl TelemetryTopic {
             TelemetryTopic::WorldWalls => "/world/walls",
             TelemetryTopic::SimGroundTruthState => "/sim/ground_truth/state",
             TelemetryTopic::SimGroundTruthPose => "/sim/ground_truth/pose",
+            TelemetryTopic::SimGroundTruthFootprint => "/sim/ground_truth/footprint",
             TelemetryTopic::EstimationEkfPose => "/estimation/ekf/pose",
         }
     }

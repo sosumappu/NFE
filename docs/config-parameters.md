@@ -74,6 +74,13 @@ This table documents the TOML parameters loaded by `packages/nfe-car/src/config.
 | --- | ---: | --- | --- |
 | `live.lidar_port` | `"/dev/lidar"` | Serial device path used by the live RPLiDAR reader. | Use the udev-stable device symlink from deployment, or discover with `ls /dev/serial/by-id` and set the service config accordingly. |
 
+## Simulator footprint
+
+| TOML path | Default | Meaning | How to get or tune it |
+| --- | ---: | --- | --- |
+| `sim.length_m` | `0.42` | Full rectangular vehicle footprint length used for simulator wall collision and Foxglove footprint visualization. | Measure the assembled race-ready car nose-to-tail, including bodywork, bumpers, mounts, and any protruding parts that should count as a crash. |
+| `sim.width_m` | `0.26` | Full rectangular vehicle footprint width used for simulator wall collision and Foxglove footprint visualization. | Measure the widest assembled width, usually outside tyre-to-tyre or body edge-to-body edge. Include protruding mounts/sensors if they should be protected. |
+
 ## Simulator kinematic model
 
 | TOML path | Default | Meaning | How to get or tune it |

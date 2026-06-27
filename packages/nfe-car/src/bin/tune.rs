@@ -1,4 +1,8 @@
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    path::PathBuf,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use anyhow::{Context, Result};
 use nfe_core::io::SensorSource as CoreSensorSource;
@@ -14,10 +18,12 @@ use nfe_sim::{
 };
 
 use nfe_car::{
+    config::SimConfig,
     init::{ReadySignal, Sensor},
     replay::live_source::LiveSensorSource,
     sensors::factory::{SensorFactory, SensorReadySignals},
     state::{SensorStateWriter, SharedState},
+    tuning::{aggregate_sim_scores, evaluate_sim_laps, SimEpisodeScore, SimTuningObjective},
 };
 
 struct Args {
@@ -32,6 +38,13 @@ struct Args {
     model_params: Option<PathBuf>,
     sim_seed: Option<u64>,
     sigma: f64,
+    parallel: bool,
+    progress: bool,
+    target_laps: u32,
+    target_speed_ms: f32,
+    min_avg_speed_ms: f32,
+    eval_seeds: usize,
+    robustness_weight: f64,
 }
 
 impl Args {
@@ -59,6 +72,23 @@ impl Args {
             model_params: get("--model-params").map(Into::into),
             sim_seed: get("--sim-seed").and_then(|v| v.parse().ok()),
             sigma: get("--sigma").and_then(|v| v.parse().ok()).unwrap_or(0.3),
+            parallel: has("--parallel"),
+            progress: has("--progress"),
+            target_laps: get("--target-laps")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(3),
+            target_speed_ms: get("--target-speed")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(3.0),
+            min_avg_speed_ms: get("--min-avg-speed")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(1.0),
+            eval_seeds: get("--eval-seeds")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(1),
+            robustness_weight: get("--robustness-weight")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0.0),
         }
     }
 }
@@ -71,6 +101,7 @@ enum TuneMode {
         model_params: Option<PathBuf>,
         seed: Option<u64>,
         dt_s: f32,
+        sim_config: SimConfig,
     },
     Replay {
         path: PathBuf,
@@ -82,7 +113,31 @@ enum TuneMode {
     },
 }
 
+fn build_vehicle(
+    model: &str,
+    model_params: Option<&PathBuf>,
+    sim_config: &SimConfig,
+) -> Result<Box<dyn VehicleModel>> {
+    match model {
+        "dynamic" => Ok(Box::new(DynamicBicycle::from_params(sim_config.dynamic))),
+        "identified" => {
+            let path = model_params.context("--model-params required for identified model")?;
+            Ok(Box::new(IdentifiedModel::from_json_with_base(
+                path,
+                sim_config.dynamic,
+            )?))
+        }
+        _ => Ok(Box::new(KinematicBicycle::from_params(
+            sim_config.kinematic,
+        ))),
+    }
+}
+
 impl TuneMode {
+    fn supports_parallel(&self) -> bool {
+        matches!(self, TuneMode::Sim { .. } | TuneMode::Replay { .. })
+    }
+
     fn source(&self) -> Result<Box<dyn CoreSensorSource>> {
         match self {
             TuneMode::Sim {
@@ -91,21 +146,26 @@ impl TuneMode {
                 model_params,
                 seed,
                 dt_s,
+                sim_config,
             } => {
-                let vehicle: Box<dyn VehicleModel> = match model.as_str() {
-                    "dynamic" => Box::new(DynamicBicycle::default()),
-                    "identified" => {
-                        let path = model_params
-                            .as_ref()
-                            .context("--model-params required for identified model")?;
-                        Box::new(IdentifiedModel::from_json(path)?)
-                    }
-                    _ => Box::new(KinematicBicycle::default()),
-                };
+                let vehicle = build_vehicle(model, model_params.as_ref(), sim_config)?;
                 let (source, _actuator) = if let Some(seed) = seed {
-                    SimulatorSource::new_with_seed(world.clone(), vehicle, *dt_s, *seed)
+                    SimulatorSource::new_with_seed_latency_and_footprint(
+                        world.clone(),
+                        vehicle,
+                        *dt_s,
+                        *seed,
+                        sim_config.latency,
+                        sim_config.footprint,
+                    )
                 } else {
-                    SimulatorSource::new(world.clone(), vehicle, *dt_s)
+                    SimulatorSource::new_with_latency_and_footprint(
+                        world.clone(),
+                        vehicle,
+                        *dt_s,
+                        sim_config.latency,
+                        sim_config.footprint,
+                    )
                 };
                 Ok(Box::new(source))
             }
@@ -182,12 +242,19 @@ fn build_mode(args: &Args, runtime: &RuntimeConfig) -> Result<TuneMode> {
         .unwrap_or_else(|| PathBuf::from("track.json"));
     let world = World::load(&world_path)
         .with_context(|| format!("cannot load sim world: {}", world_path.display()))?;
+    let sim_config = args
+        .config
+        .as_ref()
+        .and_then(|p| nfe_car::config::Config::from_toml_path(p).ok())
+        .map(|cfg| cfg.sim)
+        .unwrap_or_default();
     Ok(TuneMode::Sim {
         world,
         model: args.model.clone(),
         model_params: args.model_params.clone(),
         seed: args.sim_seed,
         dt_s: runtime.dt_s(),
+        sim_config,
     })
 }
 
@@ -237,6 +304,115 @@ fn vector_defaults(space: &[(String, ParamSpec)]) -> Vec<f64> {
     space.iter().map(|(_, spec)| spec.default_value()).collect()
 }
 
+fn print_progress<F>(
+    cma: &cmaes::CMAES<F>,
+    max_gen: usize,
+    elapsed: Duration,
+    sim_best: Option<SimEpisodeScore>,
+) {
+    let current = cma
+        .current_best_individual()
+        .map(|best| format!("{:.6}", best.value))
+        .unwrap_or_else(|| "n/a".to_string());
+    let overall = cma
+        .overall_best_individual()
+        .map(|best| format!("{:.6}", best.value))
+        .unwrap_or_else(|| "n/a".to_string());
+    if let Some(score) = sim_best {
+        let finish = score
+            .finish_time_s
+            .map(|t| format!("{t:.2}s"))
+            .unwrap_or_else(|| "n/a".to_string());
+        eprintln!(
+            "car-tune: gen={}/{} evals={} current={} best={} sigma={:.5} elapsed={:.1}s laps={} progress={:.1}% finish={} avg={:.2}m/s crash={} lat={:.3}m head={:.3}rad",
+            cma.generation(),
+            max_gen,
+            cma.function_evals(),
+            current,
+            overall,
+            cma.sigma(),
+            elapsed.as_secs_f32(),
+            score.completed_laps,
+            100.0 * score.progress_ratio,
+            finish,
+            score.avg_speed_ms,
+            score.crashed,
+            score.lateral_rms_m,
+            score.heading_rms_rad,
+        );
+    } else {
+        eprintln!(
+            "car-tune: gen={}/{} evals={} current={} best={} sigma={:.5} elapsed={:.1}s",
+            cma.generation(),
+            max_gen,
+            cma.function_evals(),
+            current,
+            overall,
+            cma.sigma(),
+            elapsed.as_secs_f32()
+        );
+    }
+}
+
+fn run_cma<F>(
+    cma: &mut cmaes::CMAES<F>,
+    max_gen: usize,
+    parallel: bool,
+    progress: bool,
+    sim_best: Option<Arc<Mutex<Option<SimEpisodeScore>>>>,
+) -> cmaes::TerminationData
+where
+    F: cmaes::ObjectiveFunction + cmaes::ParallelObjectiveFunction,
+{
+    let started = std::time::Instant::now();
+    loop {
+        let result = if parallel {
+            cma.next_parallel()
+        } else {
+            cma.next()
+        };
+        if progress {
+            let sim_best = sim_best.as_ref().and_then(|best| *best.lock().unwrap());
+            print_progress(cma, max_gen, started.elapsed(), sim_best);
+        }
+        if let Some(result) = result {
+            return result;
+        }
+    }
+}
+
+fn sim_eval_seeds(base_seed: Option<u64>, count: usize) -> Vec<u64> {
+    let base = base_seed.unwrap_or(0xC0FF_EE00);
+    (0..count.max(1))
+        .map(|i| base.wrapping_add(i as u64))
+        .collect()
+}
+
+fn evaluate_sim_candidate(
+    cfg: RuntimeConfig,
+    world: &World,
+    model: &str,
+    model_params: Option<&PathBuf>,
+    sim_config: &SimConfig,
+    seeds: &[u64],
+    objective: &SimTuningObjective,
+    robustness_weight: f64,
+) -> Result<SimEpisodeScore> {
+    let mut scores = Vec::with_capacity(seeds.len());
+    for seed in seeds {
+        scores.push(evaluate_sim_laps(
+            cfg.clone(),
+            world.clone(),
+            build_vehicle(model, model_params, sim_config)?,
+            Some(*seed),
+            sim_config.latency,
+            sim_config.footprint,
+            objective,
+        )?);
+    }
+    Ok(aggregate_sim_scores(&scores, robustness_weight))
+}
+
 fn audit_search_space(space: &[(String, ParamSpec)]) {
     let integers = space
         .iter()
@@ -264,35 +440,101 @@ fn main() -> Result<()> {
     let base_cfg = load_runtime_config(&args);
     let max_ticks = (args.episode_s / base_cfg.dt_s()).max(1.0) as usize;
     let mode = build_mode(&args, &base_cfg)?;
+    if let TuneMode::Sim { world, .. } = &mode {
+        if world.waypoints.len() < 2 {
+            anyhow::bail!("car-tune sim lap tuning requires at least two world.waypoints entries");
+        }
+    }
     let space = search_space();
     audit_search_space(&space);
     let x0 = vector_defaults(&space);
 
+    let parallel = if args.parallel && mode.supports_parallel() {
+        true
+    } else {
+        if args.parallel {
+            eprintln!("car-tune: --parallel ignored for live mode");
+        }
+        false
+    };
+
     println!(
-        "car-tune: CMA-ES starting sigma={} dim={} max_gen={} ticks={}",
+        "car-tune: CMA-ES starting sigma={} dim={} max_gen={} ticks={} parallel={} progress={} target_laps={} target_speed={:.2} eval_seeds={}",
         args.sigma,
         x0.len(),
         args.max_gen,
-        max_ticks
+        max_ticks,
+        parallel,
+        args.progress,
+        args.target_laps,
+        args.target_speed_ms,
+        args.eval_seeds.max(1)
     );
 
     let objective_mode = mode.clone();
     let base_for_objective = base_cfg.clone();
+    let sim_objective = SimTuningObjective {
+        target_laps: args.target_laps.max(1),
+        target_speed_ms: args.target_speed_ms.max(0.1),
+        min_avg_speed_ms: args.min_avg_speed_ms.max(0.1),
+        max_ticks,
+        dt_s: base_cfg.dt_s(),
+    };
+    let sim_best: Option<Arc<Mutex<Option<SimEpisodeScore>>>> =
+        matches!(mode, TuneMode::Sim { .. }).then(|| Arc::new(Mutex::new(None)));
+    let objective_sim_best = sim_best.clone();
+    let eval_seeds = args.eval_seeds.max(1);
+    let robustness_weight = args.robustness_weight;
     let objective = move |x: &cmaes::DVector<f64>| -> f64 {
         let cfg = config_from_vector(&base_for_objective, x.as_slice());
-        let mut source = match objective_mode.source() {
-            Ok(source) => source,
-            Err(e) => return 1.0e9 + format!("{e:#}").len() as f64,
-        };
-        match evaluate_episode_with_limit(
-            cfg,
-            EstimatorMode::DeadReckon,
-            source.as_mut(),
-            Some(max_ticks),
-        ) {
-            Ok(cost) if cost.ticks > 0 => cost.cost as f64,
-            Ok(_) => 1.0e9,
-            Err(e) => 1.0e9 + format!("{e:#}").len() as f64,
+        match &objective_mode {
+            TuneMode::Sim {
+                world,
+                model,
+                model_params,
+                seed,
+                sim_config,
+                ..
+            } => {
+                let seeds = sim_eval_seeds(*seed, eval_seeds);
+                match evaluate_sim_candidate(
+                    cfg,
+                    world,
+                    model,
+                    model_params.as_ref(),
+                    sim_config,
+                    &seeds,
+                    &sim_objective,
+                    robustness_weight,
+                ) {
+                    Ok(score) => {
+                        if let Some(best) = &objective_sim_best {
+                            let mut best = best.lock().unwrap();
+                            if best.map(|b| score.cost < b.cost).unwrap_or(true) {
+                                *best = Some(score);
+                            }
+                        }
+                        score.cost
+                    }
+                    Err(e) => 1.0e9 + format!("{e:#}").len() as f64,
+                }
+            }
+            TuneMode::Replay { .. } | TuneMode::Live { .. } => {
+                let mut source = match objective_mode.source() {
+                    Ok(source) => source,
+                    Err(e) => return 1.0e9 + format!("{e:#}").len() as f64,
+                };
+                match evaluate_episode_with_limit(
+                    cfg,
+                    EstimatorMode::DeadReckon,
+                    source.as_mut(),
+                    Some(max_ticks),
+                ) {
+                    Ok(cost) if cost.ticks > 0 => cost.cost as f64,
+                    Ok(_) => 1.0e9,
+                    Err(e) => 1.0e9 + format!("{e:#}").len() as f64,
+                }
+            }
         }
     };
 
@@ -301,7 +543,7 @@ fn main() -> Result<()> {
         .max_generations(args.max_gen)
         .build(objective)
         .map_err(|e| anyhow::anyhow!("CMA-ES build error: {:?}", e))?;
-    let result = cma.run();
+    let result = run_cma(&mut cma, args.max_gen, parallel, args.progress, sim_best);
     let best = result
         .overall_best
         .expect("CMA-ES failed to find any valid solution");

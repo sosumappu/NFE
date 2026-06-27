@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use nfe_runtime::pipeline::PerceptionMode;
 use serde::Deserialize;
 
 #[derive(Default, Clone, Debug, Deserialize)]
@@ -7,6 +8,7 @@ use serde::Deserialize;
 pub struct Config {
     pub control: ControlConfig,
     pub live: LiveConfig,
+    pub sim: SimConfig,
     pub init: InitConfig,
     pub safety: SafetyConfig,
     pub start_gate: StartGateConfig,
@@ -47,20 +49,8 @@ pub struct ControlConfig {
     pub lqr: [f32; 4],
     pub speed: SpeedConfig,
     pub pid: PidConfig,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-pub struct SpeedConfig {
-    pub v_max: f32,
-    pub k_dist: f32,
-    pub k_heading: f32,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-pub struct PidConfig {
-    pub kp: f32,
-    pub ki: f32,
-    pub kd: f32,
+    pub stanley: StanleyConfig,
+    pub perception: PerceptionConfig,
 }
 
 impl Default for ControlConfig {
@@ -69,18 +59,128 @@ impl Default for ControlConfig {
             watchdog_max_missed: 3,
             lqr: [0.80, 0.30, 1.20, 0.40],
             pid: PidConfig {
-                kp: 1.5,
-                ki: 0.05,
-                kd: 0.2,
+                kp: 1.8,
+                ki: 0.15,
+                kd: 0.4,
+                windup_limit: 0.62,
+                max_throttle: 1.0,
             },
+            perception: PerceptionConfig::default(),
             speed: SpeedConfig {
-                v_max: 1.0,
-                k_dist: 1.0,
-                k_heading: 1.0,
+                v_max: 1.8,
+                k_lateral: 1.0,
+                k_heading: 5.0,
+                obstacle_slowdown_m: 3.0,
             },
+            stanley: StanleyConfig::default(),
             kinematics_horizon: 500,
             hz: 100,
             estop_dist_m: 0.30,
+        }
+    }
+}
+#[derive(Debug, Deserialize, Clone)]
+#[serde(default)]
+pub struct PerceptionConfig {
+    pub mode: PerceptionMode,
+    pub ransac: RansacConfig,
+    pub apex: ApexConfig,
+}
+
+impl Default for PerceptionConfig {
+    fn default() -> Self {
+        Self {
+            mode: PerceptionMode::Corridor,
+            ransac: RansacConfig::default(),
+            apex: ApexConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(default)]
+pub struct RansacConfig {
+    pub inlier_dist_m: f32,
+    pub min_inliers: usize,
+    pub iterations: usize,
+    pub max_walls: usize,
+    pub min_pair_sep_m: f32,
+}
+
+impl Default for RansacConfig {
+    fn default() -> Self {
+        Self {
+            inlier_dist_m: 0.2,
+            min_inliers: 9,
+            iterations: 80,
+            max_walls: 4,
+            min_pair_sep_m: 0.02,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(default)]
+pub struct ApexConfig {
+    pub median_window: usize,
+    pub min_points: usize,
+    pub min_forward_m: f32,
+    pub min_range_jump_m: f32,
+    pub max_opposite_dist_error_m: f32,
+    pub max_lookahead_m: f32,
+    pub min_lookahead_m: f32,
+    pub lookahead_sensitivity: f32,
+    pub side_lookahead_fov_deg: f32,
+    pub side_lookahead_center_deg: f32,
+}
+
+impl Default for ApexConfig {
+    fn default() -> Self {
+        Self {
+            median_window: 5,
+            min_points: 8,
+            min_forward_m: 0.05,
+            min_range_jump_m: 0.08,
+            max_opposite_dist_error_m: 0.75,
+            max_lookahead_m: 8.0,
+            min_lookahead_m: 0.5,
+            lookahead_sensitivity: 5.0,
+            side_lookahead_fov_deg: 80.0,
+            side_lookahead_center_deg: 90.0,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct PidConfig {
+    pub kp: f32,
+    pub ki: f32,
+    pub kd: f32,
+    pub windup_limit: f32,
+    pub max_throttle: f32,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct SpeedConfig {
+    pub v_max: f32,
+    pub k_lateral: f32,
+    pub k_heading: f32,
+    pub obstacle_slowdown_m: f32,
+}
+#[derive(Debug, Deserialize, Clone)]
+#[serde(default)]
+pub struct StanleyConfig {
+    pub k_cross_track: f32,
+    pub softening_speed_ms: f32,
+    pub max_steering_rad: f32,
+}
+
+impl Default for StanleyConfig {
+    fn default() -> Self {
+        Self {
+            k_cross_track: 1.0,
+            softening_speed_ms: 1.0,
+            max_steering_rad: 0.38,
         }
     }
 }
@@ -121,6 +221,27 @@ impl Default for LiveConfig {
     fn default() -> Self {
         Self {
             lidar_port: "/dev/lidar".to_string(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default)]
+pub struct SimConfig {
+    #[serde(flatten)]
+    pub footprint: nfe_sim::VehicleFootprintParams,
+    pub kinematic: nfe_sim::KinematicBicycleParams,
+    pub dynamic: nfe_sim::DynamicBicycleParams,
+    pub latency: nfe_sim::LatencyParams,
+}
+
+impl Default for SimConfig {
+    fn default() -> Self {
+        Self {
+            footprint: nfe_sim::VehicleFootprintParams::default(),
+            kinematic: nfe_sim::KinematicBicycleParams::default(),
+            dynamic: nfe_sim::DynamicBicycleParams::default(),
+            latency: nfe_sim::LatencyParams::default(),
         }
     }
 }
@@ -188,7 +309,7 @@ impl InitConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::Config;
+    use super::{Config, PerceptionMode};
 
     #[test]
     fn toml_loads_and_defaults_missing_fields() {
@@ -208,5 +329,48 @@ mod tests {
         let config = Config::load(Some("/no/such/file.toml"));
         assert_eq!(config.control.hz, 100);
         assert_eq!(config.live.lidar_port, "/dev/lidar");
+    }
+
+    #[test]
+    fn toml_loads_sim_config() {
+        let path = std::env::temp_dir().join(format!("nfe-sim-{}.toml", std::process::id()));
+        std::fs::write(
+            &path,
+            "[sim]\nlength_m=0.44\nwidth_m=0.27\n[sim.dynamic]\nmass_kg=2.0\n[sim.dynamic.servo]\ntau_s=0.07\n[sim.latency]\nlatency_us=30000\n",
+        )
+        .unwrap();
+
+        let config = Config::from_toml_path(&path).unwrap();
+        assert_eq!(config.sim.footprint.length_m, 0.44);
+        assert_eq!(config.sim.footprint.width_m, 0.27);
+        assert_eq!(config.sim.dynamic.mass, 2.0);
+        assert_eq!(config.sim.dynamic.servo.tau_s, 0.07);
+        assert_eq!(config.sim.latency.latency_us, 30_000);
+        assert_eq!(config.sim.kinematic.wheelbase, 0.33);
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn toml_loads_partial_stanley_and_ransac_params() {
+        let path = std::env::temp_dir().join(format!("nfe-params-{}.toml", std::process::id()));
+        std::fs::write(
+            &path,
+            "[control.stanley]\nk_cross_track=3.25\n[control.perception]\nmode='apex'\n[control.perception.ransac]\niterations=123\nmax_walls=6\n[control.perception.apex]\nmedian_window=5\n",
+        )
+        .unwrap();
+
+        let config = Config::from_toml_path(&path).unwrap();
+        assert_eq!(config.control.stanley.k_cross_track, 3.25);
+        assert_eq!(config.control.stanley.softening_speed_ms, 1.0);
+        assert_eq!(config.control.stanley.max_steering_rad, 0.38);
+        assert_eq!(config.control.perception.mode, PerceptionMode::Apex);
+        assert_eq!(config.control.perception.ransac.iterations, 123);
+        assert_eq!(config.control.perception.ransac.max_walls, 6);
+        assert_eq!(config.control.perception.ransac.inlier_dist_m, 0.2);
+        assert_eq!(config.control.perception.apex.median_window, 5);
+        assert_eq!(config.control.perception.apex.min_points, 8);
+
+        let _ = std::fs::remove_file(path);
     }
 }

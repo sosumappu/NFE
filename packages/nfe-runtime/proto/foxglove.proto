@@ -33,6 +33,18 @@ message Pose {
   Quaternion orientation = 2;
 }
 
+message FrameTransform {
+  Timestamp timestamp = 1;
+  string parent_frame_id = 2;
+  string child_frame_id = 3;
+  Vector3 translation = 4;
+  Quaternion rotation = 5;
+}
+
+message FrameTransforms {
+  repeated FrameTransform transforms = 1;
+}
+
 message Timestamp {
   int32 sec = 1;
   uint32 nsec = 2;
@@ -68,12 +80,29 @@ message LinePrimitive {
   repeated double indices = 8;
 }
 
+message ArrowPrimitive {
+  Pose pose = 1;
+  double shaft_length = 2;
+  double shaft_diameter = 3;
+  double head_length = 4;
+  double head_diameter = 5;
+  Color color = 6;
+}
+
+message SpherePrimitive {
+  Pose pose = 1;
+  Vector3 size = 2;
+  Color color = 3;
+}
+
 message SceneEntity {
   string id = 1;
   Timestamp timestamp = 2;
   string frame_id = 3;
   uint32 frame_locked = 4;
   repeated LinePrimitive lines = 5;
+  repeated ArrowPrimitive arrows = 6;
+  repeated SpherePrimitive spheres = 7;
 }
 
 message SceneUpdate {
