@@ -106,15 +106,15 @@ through `nfe-runtime::Pipeline::step`, not through a hand-mirrored tuning
 struct.
 
 ```bash
-car-tune --sim worlds/track.json --out best_runtime_config.json --generations 200 --episode-s 30 --sim-seed 42
-car-tune --replay /tmp/run.mcap --out best_runtime_config.json --generations 80 --episode-s 20
-car-tune --live --out best_runtime_config.json --generations 10 --episode-s 5
+car-tune --sim worlds/track.json --out best_runtime_config.json --generations 200 --episode-s 90 --target-laps 3 --target-speed 3.0 --eval-seeds 3 --sim-seed 42 --parallel --progress
+car-tune --replay /tmp/run.mcap --out best_runtime_config.json --generations 80 --episode-s 20 --parallel --progress
+car-tune --live --out best_runtime_config.json --generations 10 --episode-s 5 --progress
 ```
 
 Options:
 
 | Option                                         | Meaning                                                                              |
-| ---------------------------------------------- | ------------------------------------------------------------------------------------ | ------------ | ------------------------------------ |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------ |
 | `--sim <world.json>` or `--world <world.json>` | Evaluate candidates against simulator snapshots; defaults to `track.json` if omitted |
 | `--replay <file.mcap>`                         | Evaluate candidates against recorded MCAP sensor input                               |
 | `--live`                                       | Sensor-only live dry-run evaluation; non-deterministic and intended for diagnostics  |
@@ -122,10 +122,17 @@ Options:
 | `--config <path>`                              | Base `RuntimeConfig` TOML; defaults to runtime defaults                              |
 | `--generations <n>`                            | CMA-ES generation limit; default `200`                                               |
 | `--episode-s <seconds>`                        | Episode duration cap; default `30.0`                                                 |
-| `--model <kinematic                            | dynamic                                                                              | identified>` | Simulator model; default `kinematic` |
+| `--model <kinematic|dynamic|identified>`       | Simulator model; default `kinematic`                                                 |
 | `--model-params <json>`                        | Required when `--model identified`                                                   |
-| `--sim-seed <u64>`                             | Deterministic simulator seed                                                         |
+| `--sim-seed <u64>`                             | Base deterministic simulator seed                                                    |
+| `--target-laps <n>`                            | Sim objective lap-completion target; default `3`                                     |
+| `--target-speed <m/s>`                         | Sim objective reference speed for completed-lap scoring; default `3.0`               |
+| `--min-avg-speed <m/s>`                        | Sim objective minimum average speed for incomplete episodes; default `1.0`           |
+| `--eval-seeds <n>`                             | Number of deterministic sim seeds per candidate; default `1`                         |
+| `--robustness-weight <w>`                      | Add `w * stddev(cost)` across sim seeds; default `0.0`                               |
 | `--sigma <f64>`                                | CMA-ES initial sigma; default `0.3`                                                  |
+| `--parallel`                                   | Evaluate CMA-ES candidates in parallel for sim/replay only; ignored for live mode    |
+| `--progress`                                   | Print one progress line per generation                                               |
 
 The output `best_runtime_config.json` is a serialized `RuntimeConfig` containing
 the best candidate found by the search. It can be inspected directly, used as a
@@ -183,6 +190,12 @@ Live mode initializes sensor threads, waits for readiness, notifies systemd
 readiness on Linux, binds the UDP arm listener before IMU calibration, and then
 starts the loop.
 
+### Live configuration
+
+The NixOS `car.service` runs `car --config ${pkgs.nfe-car}/share/nfe-car/nfe.toml`, and the package installs `packages/nfe-car/nfe.toml` at that path. Changes to `packages/nfe-car/nfe.toml` therefore apply to live mode after rebuilding/deploying the package and restarting the service; the running process does not hot-reload the file.
+
+Live mode maps `[control.perception]`, `[control.perception.ransac]`, and `[control.perception.apex]` into the runtime perception stack, and `[control.stanley]` into the reactive Stanley controller. Set `control.perception.mode = "corridor"` for RANSAC wall/corridor perception or `"apex"` for discontinuity/apex perception. Manual runs outside systemd still need `--config <path>` if they should use a TOML file instead of compiled defaults.
+
 ### Simulation mode
 
 Simulation mode loads a world file, synthesizes sensor snapshots through
@@ -198,6 +211,8 @@ car --sim worlds/track.json --model identified --model-params identified.json --
 Sim mode is deterministic when `--sim-seed` is provided. StartGate defaults to a
 delay policy in sim mode and still suppresses actuator output until the gate
 opens.
+
+Simulator physics is configured by the app-level `[sim]` section in `packages/nfe-car/nfe.toml`. `[sim.kinematic]` and `[sim.dynamic]` set vehicle model constants, `[sim.dynamic.servo]` and `[sim.dynamic.motor]` model actuator lag/deadband, `[sim.dynamic.tyre]` and `[sim.dynamic.chassis]` set saturation/load-transfer behaviour, and `[sim.latency]` delays command application to match the live control path more closely.
 
 ### Replay mode
 
@@ -339,13 +354,13 @@ evaluates every candidate through `Pipeline::step`.
 Simulation episode tuning:
 
 ```bash
-car-tune --sim worlds/track.json --sim-seed 42 --episode-s 30 --generations 200 --out best_runtime_config.json
+car-tune --sim worlds/track.json --sim-seed 42 --episode-s 90 --target-laps 3 --target-speed 3.0 --eval-seeds 3 --generations 200 --out best_runtime_config.json --parallel --progress
 ```
 
 Replay episode tuning:
 
 ```bash
-car-tune --replay /tmp/live.mcap --episode-s 30 --generations 100 --out best_runtime_config.json
+car-tune --replay /tmp/live.mcap --episode-s 30 --generations 100 --out best_runtime_config.json --parallel --progress
 ```
 
 Live dry-run tuning:
@@ -354,10 +369,7 @@ Live dry-run tuning:
 car-tune --live --episode-s 5 --generations 10 --out best_runtime_config.json
 ```
 
-Simulation is the preferred deterministic tuning path. Replay evaluates against
-fixed recorded sensor input. Live tuning is sensor-only/dry-run and
-non-deterministic because each candidate observes current hardware state rather
-than the same episode.
+Simulation is the preferred deterministic tuning path. Sim tuning is closed-loop: `Pipeline::step` commands are applied to `SimulatorSource`, and the objective requires waypoint-based lap progress instead of rewarding stationary low-control episodes. `world.waypoints` must contain at least two points for sim lap tuning. Replay evaluates against fixed recorded sensor input with the generic sensor-only objective. Both sim and replay support `--parallel`, which evaluates each CMA-ES generation's independent candidates through Rayon; set `RAYON_NUM_THREADS=<n>` to bound worker count. Live tuning is sensor-only/dry-run and non-deterministic because each candidate observes current hardware state rather than the same episode, so `--parallel` is ignored in live mode.
 
 `best_runtime_config.json` contains a pretty-printed serialized `RuntimeConfig`
 produced by applying the best CMA-ES vector through `config_from_vector`;
@@ -393,7 +405,9 @@ poses, and wall scenes render without a custom plugin.
 | `/control/safety`                   | JSON     | Safety telemetry                       |
 | `/control/start_gate`               | JSON     | StartGate transition telemetry         |
 | `/perception/reactive/corridor`     | JSON     | Reactive corridor estimate             |
+| `/perception/reactive/scene`        | protobuf | RANSAC walls or Apex target scene       |
 | `/perception/reactive/ransac_walls` | JSON     | Reactive RANSAC wall telemetry         |
+| `/perception/reactive/apex`         | JSON     | Reactive Apex point/gap telemetry       |
 | `/mapping/ransac_walls`             | JSON     | Mapping wall detections                |
 | `/estimation/ekf/state`             | JSON     | EKF state telemetry                    |
 | `/estimation/ekf/pose`              | protobuf | `foxglove.PosesInFrame`                |
@@ -465,7 +479,9 @@ cargo metadata --no-deps --format-version 1
 - Log-scale parameter metadata is discovered but candidates are not yet sampled
   in log space; the current objective clamps in linear space.
 - Live tuning is non-deterministic and sensor-only/dry-run, so sim or replay
-  tuning should be preferred for repeatable optimization.
+  tuning should be preferred for repeatable optimization. `car-tune --parallel`
+  is intentionally limited to sim/replay and ignored for live mode.
+- Sim lap tuning requires `world.waypoints`; worlds without waypoints can still run `car --sim`, but `car-tune --sim` needs waypoints to measure progress and lap completion.
 - Building `.#packages.aarch64-linux.nfe-car` from the current development host
   requires a reachable `aarch64-linux` Nix builder; without one, Nix evaluation
   can pass while the actual build is blocked by platform mismatch or remote

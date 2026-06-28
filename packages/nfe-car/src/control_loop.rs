@@ -1,5 +1,8 @@
 use std::f32::consts::PI;
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 
 use anyhow::Result;
 use nfe_core::{
@@ -81,6 +84,7 @@ pub async fn run(
             s2.set_shutdown();
         });
     }
+    let shutdown_signals = ShutdownSignals::install()?;
 
     let mut ticker = interval(config.control_period());
     ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -126,9 +130,17 @@ pub async fn run(
             ticker.tick().await;
         }
 
-        let done = state
-            .as_ref()
-            .map_or(source.is_exhausted(), |s| s.is_shutdown());
+        let shutdown_signal = shutdown_signals.received();
+        if shutdown_signal {
+            warn!("car: shutdown signal");
+            if let Some(s) = state.as_ref() {
+                s.set_shutdown();
+            }
+        }
+        let done = shutdown_signal
+            || state
+                .as_ref()
+                .map_or(source.is_exhausted(), |s| s.is_shutdown());
         if done {
             actuator.safe_state()?;
             info!(
@@ -371,6 +383,42 @@ pub async fn run(
     Ok(())
 }
 
+struct ShutdownSignals {
+    received: Arc<AtomicBool>,
+    handlers: Vec<signal_hook_registry::SigId>,
+}
+
+impl ShutdownSignals {
+    fn install() -> Result<Self> {
+        let received = Arc::new(AtomicBool::new(false));
+        let mut handlers = Vec::new();
+        for kind in [SignalKind::terminate(), SignalKind::interrupt()] {
+            let flag = received.clone();
+            let signal = kind.as_raw_value();
+            // The handler only stores to an atomic flag, which is async-signal-safe.
+            let handler = unsafe {
+                signal_hook_registry::register(signal, move || {
+                    flag.store(true, Ordering::SeqCst);
+                })?
+            };
+            handlers.push(handler);
+        }
+        Ok(Self { received, handlers })
+    }
+
+    fn received(&self) -> bool {
+        self.received.load(Ordering::SeqCst)
+    }
+}
+
+impl Drop for ShutdownSignals {
+    fn drop(&mut self) {
+        for handler in self.handlers.drain(..) {
+            signal_hook_registry::unregister(handler);
+        }
+    }
+}
+
 fn runtime_config_from_car(config: &Config) -> RuntimeConfig {
     let mut runtime = RuntimeConfig {
         hz: config.control.hz,
@@ -380,17 +428,86 @@ fn runtime_config_from_car(config: &Config) -> RuntimeConfig {
         },
         ..Default::default()
     };
-    runtime.algo.reactive.lqr.k_lateral = config.control.lqr[0];
-    runtime.algo.reactive.lqr.k_lateral_rate = config.control.lqr[1];
-    runtime.algo.reactive.lqr.k_heading = config.control.lqr[2];
-    runtime.algo.reactive.lqr.k_yaw_rate = config.control.lqr[3];
+    runtime.perception_mode = config.control.perception.mode;
+    // With ReativeController based LQR
+    // runtime.algo.reactive.lqr.k_lateral = config.control.lqr[0];
+    // runtime.algo.reactive.lqr.k_lateral_rate = config.control.lqr[1];
+    // runtime.algo.reactive.lqr.k_heading = config.control.lqr[2];
+    // runtime.algo.reactive.lqr.k_yaw_rate = config.control.lqr[3];
+    // ransac
+    runtime.algo.perception.ransac.inlier_dist_m = config.control.perception.ransac.inlier_dist_m;
+    runtime.algo.perception.ransac.min_inliers = config.control.perception.ransac.min_inliers;
+    runtime.algo.perception.ransac.iterations = config.control.perception.ransac.iterations;
+    runtime.algo.perception.ransac.max_walls = config.control.perception.ransac.max_walls;
+    runtime.algo.perception.ransac.min_pair_sep_m = config.control.perception.ransac.min_pair_sep_m;
+    //apex
+    runtime.algo.apex.median_window = config.control.perception.apex.median_window;
+    runtime.algo.apex.min_points = config.control.perception.apex.min_points;
+    runtime.algo.apex.min_forward_m = config.control.perception.apex.min_forward_m;
+    runtime.algo.apex.min_range_jump_m = config.control.perception.apex.min_range_jump_m;
+    runtime.algo.apex.max_opposite_dist_error_m =
+        config.control.perception.apex.max_opposite_dist_error_m;
+    runtime.algo.apex.max_lookahead_m = config.control.perception.apex.max_lookahead_m;
+    runtime.algo.apex.min_lookahead_m = config.control.perception.apex.min_lookahead_m;
+    runtime.algo.apex.lookahead_sensitivity = config.control.perception.apex.lookahead_sensitivity;
+    runtime.algo.apex.side_lookahead_fov_deg =
+        config.control.perception.apex.side_lookahead_fov_deg;
+    runtime.algo.apex.side_lookahead_center_deg =
+        config.control.perception.apex.side_lookahead_center_deg;
+    // stanley
+    runtime.algo.reactive.stanley.k_cross_track = config.control.stanley.k_cross_track;
+    runtime.algo.reactive.stanley.softening_speed_ms = config.control.stanley.softening_speed_ms;
+    runtime.algo.reactive.stanley.max_steering_rad = config.control.stanley.max_steering_rad;
+    // pid
     runtime.algo.reactive.pid.kp = config.control.pid.kp;
     runtime.algo.reactive.pid.ki = config.control.pid.ki;
     runtime.algo.reactive.pid.kd = config.control.pid.kd;
+    runtime.algo.reactive.pid.windup_limit = config.control.pid.windup_limit;
+    runtime.algo.reactive.pid.max_throttle = config.control.pid.max_throttle;
+    // speed planer
     runtime.algo.reactive.speed.v_max = config.control.speed.v_max;
-    runtime.algo.reactive.speed.k_lateral = config.control.speed.k_dist;
+    runtime.algo.reactive.speed.k_lateral = config.control.speed.k_lateral;
     runtime.algo.reactive.speed.k_heading = config.control.speed.k_heading;
+    runtime.algo.reactive.speed.obstacle_slowdown_m = config.control.speed.obstacle_slowdown_m;
     runtime
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn runtime_config_from_car_applies_live_perception_and_stanley_params() {
+        let mut config = Config::default();
+        config.control.perception.ransac.inlier_dist_m = 0.07;
+        config.control.perception.ransac.min_inliers = 13;
+        config.control.perception.ransac.iterations = 111;
+        config.control.perception.ransac.max_walls = 5;
+        config.control.perception.mode = nfe_runtime::pipeline::PerceptionMode::Apex;
+        config.control.perception.ransac.min_pair_sep_m = 0.09;
+        config.control.perception.apex.median_window = 5;
+        config.control.perception.apex.min_range_jump_m = 0.4;
+        config.control.stanley.k_cross_track = 4.0;
+        config.control.stanley.softening_speed_ms = 0.5;
+        config.control.stanley.max_steering_rad = 0.44;
+
+        let runtime = runtime_config_from_car(&config);
+
+        assert_eq!(runtime.algo.perception.ransac.inlier_dist_m, 0.07);
+        assert_eq!(runtime.algo.perception.ransac.min_inliers, 13);
+        assert_eq!(runtime.algo.perception.ransac.iterations, 111);
+        assert_eq!(runtime.algo.perception.ransac.max_walls, 5);
+        assert_eq!(
+            runtime.perception_mode,
+            nfe_runtime::pipeline::PerceptionMode::Apex
+        );
+        assert_eq!(runtime.algo.perception.ransac.min_pair_sep_m, 0.09);
+        assert_eq!(runtime.algo.apex.median_window, 5);
+        assert_eq!(runtime.algo.apex.min_range_jump_m, 0.4);
+        assert_eq!(runtime.algo.reactive.stanley.k_cross_track, 4.0);
+        assert_eq!(runtime.algo.reactive.stanley.softening_speed_ms, 0.5);
+        assert_eq!(runtime.algo.reactive.stanley.max_steering_rad, 0.44);
+    }
 }
 
 fn to_runtime_snapshot(

@@ -2,11 +2,12 @@
 
 use nfe_core::params::Tunable;
 
-use crate::control::reactive::ReactiveControllerParams;
+use crate::control::reactive_stanley::ReactiveStanleyControllerParams;
 use crate::estimation::ekf::EkfParams;
 use crate::localization::particle::ParticleParams;
 use crate::localization::scan_match::ScanMatchParams;
 use crate::mapping::MapperParams;
+use crate::perception::apex::ApexParams;
 use crate::perception::corridor::CorridorParams;
 use crate::raceline::controller::RaceLineControllerParams;
 use crate::raceline::solver::RaceLineSolverParams;
@@ -20,6 +21,8 @@ pub struct AlgoConfig {
     #[tunable(nested)]
     pub perception: CorridorParams,
     #[tunable(nested)]
+    pub apex: ApexParams,
+    #[tunable(nested)]
     pub mapper: MapperParams,
     #[tunable(nested)]
     pub scan_match: ScanMatchParams,
@@ -28,7 +31,7 @@ pub struct AlgoConfig {
     #[tunable(nested)]
     pub supervisor: SupervisorParams,
     #[tunable(nested)]
-    pub reactive: ReactiveControllerParams,
+    pub reactive: ReactiveStanleyControllerParams,
     #[tunable(nested)]
     pub raceline_controller: RaceLineControllerParams,
     #[tunable(nested)]

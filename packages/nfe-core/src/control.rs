@@ -6,7 +6,7 @@
 
 use crate::estimation::StateEstimate;
 use crate::raceline::RaceReference;
-use crate::{MotionState, Pose2, WallLine};
+use crate::{MotionState, Pose2};
 
 /// Reactive corridor estimate consumed by wall-following controllers.
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -17,8 +17,6 @@ pub struct CorridorEstimate {
     pub nearest_obstacle_m: f32,
     /// Perception confidence in [0,1].
     pub confidence: f32,
-    /// Fitted walls in the current frame; optional consumers can inspect them.
-    pub walls: Vec<WallLine>,
 }
 
 /// One control-law input at a deterministic pipeline tick.

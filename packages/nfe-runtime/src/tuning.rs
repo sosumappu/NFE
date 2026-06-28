@@ -45,9 +45,19 @@ pub fn evaluate_episode_with_limit(
     source: &mut dyn SensorSource,
     max_ticks: Option<usize>,
 ) -> anyhow::Result<EpisodeCost> {
-    let mut pipeline = Pipeline::new(cfg, estimator_mode);
     let mut actuator = NullActuator;
-    let out = run_sync(&mut pipeline, source, &mut actuator, max_ticks)?;
+    evaluate_episode_with_actuator(cfg, estimator_mode, source, &mut actuator, max_ticks)
+}
+
+pub fn evaluate_episode_with_actuator(
+    cfg: RuntimeConfig,
+    estimator_mode: EstimatorMode,
+    source: &mut dyn SensorSource,
+    actuator: &mut dyn ActuatorSink,
+    max_ticks: Option<usize>,
+) -> anyhow::Result<EpisodeCost> {
+    let mut pipeline = Pipeline::new(cfg, estimator_mode);
+    let out = run_sync(&mut pipeline, source, actuator, max_ticks)?;
     Ok(summarize(&out))
 }
 
@@ -108,6 +118,8 @@ mod tests {
     fn exposes_non_empty_search_space() {
         let ss = search_space();
         assert!(ss.iter().any(|(k, _)| k == "algo.ekf.q_accel"));
-        assert!(ss.iter().any(|(k, _)| k == "algo.reactive.lqr.k_lateral"));
+        assert!(ss
+            .iter()
+            .any(|(k, _)| k == "algo.reactive.stanley.k_cross_track"));
     }
 }

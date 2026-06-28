@@ -27,6 +27,8 @@ rustPlatform.buildRustPackage {
   buildInputs = [systemd fontconfig];
 
   postInstall = ''
+    install -Dm0644 packages/nfe-car/nfe.toml $out/share/nfe-car/nfe.toml
+
     ${lib.optionalString (stdenv.hostPlatform != stdenv.buildPlatform) ''
       $STRIP $out/bin/car
       $STRIP $out/bin/car-diag

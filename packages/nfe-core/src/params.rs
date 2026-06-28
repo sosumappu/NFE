@@ -121,6 +121,22 @@ mod tests {
         _scratch: f32,
     }
 
+    #[derive(Tunable)]
+    struct WithSkippedDefault {
+        #[param(0.0..4.0, default = 0.8)]
+        k_lat: f32,
+        skipped_gain: f32,
+    }
+
+    impl Default for WithSkippedDefault {
+        fn default() -> Self {
+            Self {
+                k_lat: 0.8,
+                skipped_gain: 0.7,
+            }
+        }
+    }
+
     #[test]
     fn descriptors_are_namespaced_and_typed() {
         let specs = Outer::search_space("control");
@@ -178,6 +194,18 @@ mod tests {
         assert_eq!(rebuilt.inner.k_lat, 0.8);
         assert_eq!(rebuilt.inner.window, 5);
         assert!((rebuilt.ki - 0.05).abs() < 1e-6);
+    }
+
+    #[test]
+    fn skipped_fields_use_struct_defaults() {
+        let map = HashMap::new();
+        let rebuilt = WithSkippedDefault::from_flat("control", &map);
+        assert_eq!(rebuilt.k_lat, 0.8);
+        assert_eq!(rebuilt.skipped_gain, 0.7);
+
+        let specs = WithSkippedDefault::search_space("control");
+        assert!(specs.iter().any(|(k, _)| k == "control.k_lat"));
+        assert!(!specs.iter().any(|(k, _)| k == "control.skipped_gain"));
     }
 
     #[test]

@@ -2,10 +2,13 @@ use std::path::Path;
 
 use nfe_algo::config::AlgoConfig;
 
+use crate::pipeline::PerceptionMode;
+
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 #[serde(default)]
 pub struct RuntimeConfig {
     pub hz: u64,
+    pub perception_mode: PerceptionMode,
     pub mapping: MappingRuntimeConfig,
     pub algo: AlgoConfig,
 }
@@ -14,6 +17,7 @@ impl Default for RuntimeConfig {
     fn default() -> Self {
         Self {
             hz: 100,
+            perception_mode: PerceptionMode::Apex,
             mapping: MappingRuntimeConfig::default(),
             algo: AlgoConfig::default(),
         }

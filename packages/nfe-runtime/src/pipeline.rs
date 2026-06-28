@@ -1,9 +1,11 @@
-use nfe_algo::control::reactive::ReactiveController;
+use nfe_algo::control::reactive_stanley::ReactiveStanleyController;
 use nfe_algo::estimation::dead_reckon::DeadReckonEstimator;
 use nfe_algo::estimation::ekf::Ekf;
 use nfe_algo::localization::particle::ParticleLocalizer;
 use nfe_algo::localization::scan_match::ScanMatchLocalizer;
+use nfe_algo::perception::apex::{ApexCorridorPerception, ApexPerception};
 use nfe_algo::perception::corridor::{CorridorPerception, RansacCorridorPerception};
+use nfe_algo::perception::{ApexObservation, PerceptionObserver, RansacWallsObservation};
 use nfe_algo::raceline::controller::RaceLineController;
 use nfe_algo::raceline::solver::solve_min_curvature;
 use nfe_algo::supervisor::{HealthReport, LoopClosureStatus, RaceSupervisor};
@@ -12,15 +14,16 @@ use nfe_core::estimation::{StateEstimate, StateEstimator};
 use nfe_core::localization::{LocalizationResult, Localizer};
 use nfe_core::mapping::{MapStatus, MapperClient, MappingInput, TrackMap};
 use nfe_core::raceline::{RaceLine, RaceLinePoint, RaceReference};
-use nfe_core::sensors::SensorSnapshot;
+use nfe_core::sensors::{LidarPoint, SensorSnapshot};
 use nfe_core::telemetry::{
-    ControlTelemetry, EkfStateTelemetry, EstimationTelemetry, EstimationTelemetryKind,
+    ApexFrame, ControlTelemetry, EkfStateTelemetry, EstimationTelemetry, EstimationTelemetryKind,
     LocalizationTelemetry, LocalizationTelemetryKind, MappingTelemetry, MappingTelemetryKind,
     MetricsTelemetry, PerceptionTelemetry, PerceptionTelemetryKind, PlanningTelemetry,
-    PlanningTelemetryKind, RaceTelemetry, RaceTelemetryKind, SupervisorStateTelemetry,
-    SupervisorTelemetry, SupervisorTelemetryKind, SupervisorTransitionTelemetry, TelemetryEvent,
+    PlanningTelemetryKind, RaceTelemetry, RaceTelemetryKind, RansacWallFitFrame,
+    SupervisorStateTelemetry, SupervisorTelemetry, SupervisorTelemetryKind,
+    SupervisorTransitionTelemetry, TelemetryEvent, WallFitSource,
 };
-use nfe_core::{wrap_angle, Point2, Pose2};
+use nfe_core::{wrap_angle, Point2, Pose2, WallLine};
 
 use crate::config::RuntimeConfig;
 use crate::mapping_worker::MappingWorker;
@@ -30,6 +33,14 @@ use crate::telemetry_bus::TelemetryBus;
 pub enum EstimatorMode {
     DeadReckon,
     Ekf,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PerceptionMode {
+    #[default]
+    Corridor,
+    Apex,
 }
 
 #[derive(Clone, Debug)]
@@ -43,9 +54,79 @@ pub struct StepOutput {
     pub raceline_revision: Option<u64>,
 }
 
+#[derive(Clone, Debug)]
+struct ObservedRansacWalls {
+    timestamp_us: u64,
+    walls: Vec<WallLine>,
+    points_total: usize,
+    confidence: f32,
+}
+
+#[derive(Clone, Debug)]
+struct ObservedApex {
+    timestamp_us: u64,
+    apex: LidarPoint,
+    opposite: LidarPoint,
+    target: LidarPoint,
+    cartesian_midpoint: LidarPoint,
+    range_jump_m: f32,
+    derivative_score: f32,
+    points_total: u32,
+    confidence: f32,
+}
+
+#[derive(Default)]
+struct RuntimePerceptionObserver {
+    enabled: bool,
+    ransac_walls: Option<ObservedRansacWalls>,
+    apex: Option<ObservedApex>,
+}
+
+impl RuntimePerceptionObserver {
+    fn begin_step(&mut self, enabled: bool) {
+        self.enabled = enabled;
+        self.ransac_walls = None;
+        self.apex = None;
+    }
+}
+
+impl PerceptionObserver for RuntimePerceptionObserver {
+    fn wants_ransac_walls(&self) -> bool {
+        self.enabled
+    }
+
+    fn ransac_walls(&mut self, event: RansacWallsObservation<'_>) {
+        self.ransac_walls = Some(ObservedRansacWalls {
+            timestamp_us: event.timestamp_us,
+            walls: event.walls.to_vec(),
+            points_total: event.points.len(),
+            confidence: event.confidence,
+        });
+    }
+
+    fn wants_apex(&self) -> bool {
+        self.enabled
+    }
+
+    fn apex(&mut self, event: ApexObservation<'_>) {
+        self.apex = Some(ObservedApex {
+            timestamp_us: event.timestamp_us,
+            apex: *event.apex,
+            opposite: *event.opposite,
+            target: *event.target,
+            cartesian_midpoint: *event.cartesian_midpoint,
+            range_jump_m: event.range_jump_m,
+            derivative_score: event.derivative_score,
+            points_total: event.filtered_points.len() as u32,
+            confidence: event.confidence,
+        });
+    }
+}
+
 pub struct Pipeline {
     cfg: RuntimeConfig,
     telemetry: Option<TelemetryBus>,
+    perception_observer: RuntimePerceptionObserver,
     tick: u64,
     last_mode: Option<nfe_algo::supervisor::DriveMode>,
     last_map_revision_published: Option<u64>,
@@ -53,12 +134,13 @@ pub struct Pipeline {
     estimator_mode: EstimatorMode,
     dead_reckon: DeadReckonEstimator,
     ekf: Ekf,
-    perception: RansacCorridorPerception,
+    corridor_perception: RansacCorridorPerception,
+    apex_perception: ApexCorridorPerception,
     mapper: MappingWorker,
     scan_match: ScanMatchLocalizer,
     particle: ParticleLocalizer,
     supervisor: RaceSupervisor,
-    reactive: ReactiveController,
+    reactive: ReactiveStanleyController,
     raceline_controller: RaceLineController,
     raceline: Option<RaceLine>,
 }
@@ -73,16 +155,21 @@ impl Pipeline {
         Self {
             dead_reckon: DeadReckonEstimator::new(),
             ekf: Ekf::new(cfg.algo.ekf.clone()),
-            perception: RansacCorridorPerception::new(cfg.algo.perception.clone(), 0xC0FFEE),
+            corridor_perception: RansacCorridorPerception::new(
+                cfg.algo.perception.clone(),
+                0xC0FFEE,
+            ),
+            apex_perception: ApexCorridorPerception::new(cfg.algo.apex.clone()),
             mapper,
             scan_match: ScanMatchLocalizer::new(cfg.algo.scan_match.clone(), 0x0515_CA11),
             particle: ParticleLocalizer::new(cfg.algo.particle.clone(), 0x9EED),
             supervisor: RaceSupervisor::new(cfg.algo.supervisor.clone()),
-            reactive: ReactiveController::new(cfg.algo.reactive.clone()),
+            reactive: ReactiveStanleyController::new(cfg.algo.reactive.clone()),
             raceline_controller: RaceLineController::new(cfg.algo.raceline_controller.clone()),
             raceline: None,
             cfg,
             telemetry: None,
+            perception_observer: RuntimePerceptionObserver::default(),
             tick: 0,
             last_mode: None,
             last_map_revision_published: None,
@@ -104,6 +191,7 @@ impl Pipeline {
         self.dead_reckon.reset(pose, timestamp_us);
         self.ekf.reset(pose, timestamp_us);
         self.supervisor = RaceSupervisor::new(self.cfg.algo.supervisor.clone());
+        self.apex_perception.reset();
         self.reactive.reset();
         self.raceline_controller.reset();
         self.raceline = None;
@@ -111,16 +199,30 @@ impl Pipeline {
         self.last_mode = None;
         self.last_map_revision_published = None;
         self.last_raceline_revision_published = None;
+        self.perception_observer.begin_step(false);
     }
 
     pub fn step(&mut self, snapshot: SensorSnapshot) -> StepOutput {
         self.predict(snapshot.imu);
         let mut estimate = self.estimate();
+        let observe_perception = self.telemetry.as_ref().is_some_and(|bus| !bus.is_empty());
+        self.perception_observer.begin_step(observe_perception);
 
-        let points = snapshot.lidar.as_points2();
-        let corridor = self
-            .perception
-            .estimate(&points, snapshot.lidar.timestamp_us);
+        let corridor = match self.cfg.perception_mode {
+            PerceptionMode::Corridor => {
+                let points = snapshot.lidar.as_points2();
+                self.corridor_perception.estimate_observed(
+                    &points,
+                    snapshot.lidar.timestamp_us,
+                    &mut self.perception_observer,
+                )
+            }
+            PerceptionMode::Apex => self.apex_perception.estimate_observed(
+                &snapshot.lidar,
+                snapshot.lidar.timestamp_us,
+                &mut self.perception_observer,
+            ),
+        };
 
         if self.cfg.mapping.enabled {
             let _ = self.mapper.submit(MappingInput {
@@ -234,6 +336,24 @@ impl Pipeline {
             timestamp_us: ts,
             kind: PerceptionTelemetryKind::ReactiveCorridor(corridor.clone()),
         }));
+        match self.cfg.perception_mode {
+            PerceptionMode::Corridor => {
+                if let Some(frame) = &self.perception_observer.ransac_walls {
+                    bus.publish(TelemetryEvent::Perception(PerceptionTelemetry {
+                        timestamp_us: frame.timestamp_us,
+                        kind: PerceptionTelemetryKind::ReactiveRansacWalls(ransac_frame(frame)),
+                    }));
+                }
+            }
+            PerceptionMode::Apex => {
+                if let Some(frame) = &self.perception_observer.apex {
+                    bus.publish(TelemetryEvent::Perception(PerceptionTelemetry {
+                        timestamp_us: frame.timestamp_us,
+                        kind: PerceptionTelemetryKind::ReactiveApex(apex_frame(frame)),
+                    }));
+                }
+            }
+        }
         bus.publish(TelemetryEvent::Estimation(EstimationTelemetry {
             timestamp_us: ts,
             kind: EstimationTelemetryKind::EkfState(EkfStateTelemetry {
@@ -384,6 +504,43 @@ impl Pipeline {
     }
 }
 
+fn apex_frame(frame: &ObservedApex) -> ApexFrame {
+    ApexFrame {
+        frame_id: "base_link".to_string(),
+        apex: Point2::new(frame.apex.x, frame.apex.y),
+        opposite: Point2::new(frame.opposite.x, frame.opposite.y),
+        target: Point2::new(frame.target.x, frame.target.y),
+        cartesian_midpoint: Point2::new(frame.cartesian_midpoint.x, frame.cartesian_midpoint.y),
+        apex_range_m: frame.apex.dist_m,
+        opposite_range_m: frame.opposite.dist_m,
+        target_range_m: frame.target.dist_m,
+        apex_angle_rad: frame.apex.angle_rad,
+        opposite_angle_rad: frame.opposite.angle_rad,
+        target_angle_rad: frame.target.angle_rad,
+        range_jump_m: frame.range_jump_m,
+        derivative_score: frame.derivative_score,
+        points_total: frame.points_total,
+        confidence: frame.confidence,
+    }
+}
+
+fn ransac_frame(frame: &ObservedRansacWalls) -> RansacWallFitFrame {
+    let points_total = frame.points_total as u32;
+    let inliers_total = frame
+        .walls
+        .iter()
+        .map(|w| (w.support.clamp(0.0, 1.0) * points_total as f32).round() as u32)
+        .sum();
+    RansacWallFitFrame {
+        frame_id: "base_link".to_string(),
+        source: WallFitSource::Reactive,
+        walls: frame.walls.clone(),
+        points_total,
+        inliers_total,
+        confidence: frame.confidence,
+    }
+}
+
 fn reference_for_pose(line: &RaceLine, pose: Pose2) -> Option<RaceReference> {
     let target = nearest_point(line, Point2::new(pose.x, pose.y))?;
     let dx = pose.x - target.p.x;
@@ -447,6 +604,39 @@ mod tests {
         }
     }
 
+    fn apex_snapshot(ts: u64) -> SensorSnapshot {
+        let mut cloud = LidarCloud {
+            points: Vec::new(),
+            timestamp_us: ts,
+        };
+        for p in [
+            Point2::new(0.5, -0.8),
+            Point2::new(1.0, -0.8),
+            Point2::new(1.5, -0.8),
+            Point2::new(1.0, 0.8),
+            Point2::new(1.0, 2.0),
+            Point2::new(1.5, 2.1),
+        ] {
+            cloud.points.push(LidarPoint {
+                x: p.x,
+                y: p.y,
+                dist_m: p.x.hypot(p.y),
+                angle_rad: p.y.atan2(p.x),
+                timestamp_us: ts,
+            });
+        }
+        SensorSnapshot {
+            lidar: cloud,
+            imu: ImuSample {
+                timestamp_us: ts,
+                ..Default::default()
+            },
+            sensor_fault: false,
+            sonar_m: [f32::MAX; 3],
+            start_line_crossed: false,
+        }
+    }
+
     #[test]
     fn pipeline_reactive_step_produces_finite_command() {
         let mut cfg = RuntimeConfig::default();
@@ -457,5 +647,21 @@ mod tests {
         assert!(out.command.steering_rad.is_finite());
         assert!(out.command.throttle.is_finite());
         assert_eq!(out.drive_mode, nfe_algo::supervisor::DriveMode::Reactive);
+    }
+
+    #[test]
+    fn pipeline_apex_perception_step_produces_finite_command() {
+        let mut cfg = RuntimeConfig::default();
+        cfg.mapping.enabled = false;
+        cfg.perception_mode = PerceptionMode::Apex;
+        cfg.algo.apex.median_window = 1;
+        cfg.algo.apex.min_points = 4;
+        cfg.algo.apex.min_range_jump_m = 0.2;
+        let mut p = Pipeline::new(cfg, EstimatorMode::DeadReckon);
+        p.reset(Pose2::default(), 0);
+        let out = p.step(apex_snapshot(10_000));
+        assert!(out.command.steering_rad.is_finite());
+        assert!(out.command.throttle.is_finite());
+        assert!(out.corridor.confidence > 0.0, "corridor={:?}", out.corridor);
     }
 }

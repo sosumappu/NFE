@@ -24,6 +24,12 @@
       default = "10M";
       description = "Size of the in-memory log ring buffer";
     };
+
+    configFile = lib.mkOption {
+      type = lib.types.str;
+      default = "${config.services.car.package}/share/nfe-car/nfe.toml";
+      description = "TOML configuration passed to the car binary";
+    };
   };
 
   config = lib.mkIf config.services.car.enable {
@@ -66,7 +72,7 @@
       requires = ["systemd-udevd.service"];
 
       serviceConfig = {
-        ExecStart = "${config.services.car.package}/bin/car";
+        ExecStart = "${config.services.car.package}/bin/car --config ${config.services.car.configFile}";
 
         User = "car";
         Group = "car";

@@ -372,6 +372,7 @@ fn publish_cloud(
 
         // Car-local frame: +x = forward (+cos), +y = left (-sin, CW positive)
         let x = dist_m * angle_rad.cos();
+        //WARN : might be inverted if lidar has clock-wise angles
         let y = -dist_m * angle_rad.sin();
 
         points.push(LidarPoint {

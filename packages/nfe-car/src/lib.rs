@@ -12,4 +12,5 @@ pub mod replay;
 pub mod sensors;
 pub mod state;
 pub mod time;
+pub mod tuning;
 pub mod types;

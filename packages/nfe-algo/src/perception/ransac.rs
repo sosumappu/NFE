@@ -19,19 +19,19 @@ use nfe_core::{Point2, WallLine};
 #[serde(default)]
 pub struct RansacParams {
     /// Inlier threshold: max perpendicular distance to count as supporting.
-    #[param(0.01..0.20, default = 0.05)]
+    #[param(0.01..0.20, default = 0.20)]
     pub inlier_dist_m: f32,
     /// Minimum inliers for a hypothesis to be accepted as a wall.
-    #[param(int, 4..40, default = 8)]
+    #[param(int, 4..40, default = 9)]
     pub min_inliers: usize,
     /// RANSAC iterations per wall extraction.
     #[param(int, 16..512, default = 80)]
     pub iterations: usize,
     /// Maximum walls to extract per scan (corridor: ~2-4).
-    #[param(int, 1..8, default = 4)]
+    #[param(int, 1..8, default = 3)]
     pub max_walls: usize,
     /// Minimum endpoint separation for a valid hypothesis (reject near-coincident pairs).
-    #[param(0.02..0.50, default = 0.08)]
+    #[param(0.02..0.50, default = 0.02)]
     pub min_pair_sep_m: f32,
 }
 
@@ -39,11 +39,11 @@ impl Default for RansacParams {
     fn default() -> Self {
         // Mirrors the derive defaults; kept explicit for non-tuned construction.
         Self {
-            inlier_dist_m: 0.05,
-            min_inliers: 8,
+            inlier_dist_m: 0.20,
+            min_inliers: 9,
             iterations: 80,
-            max_walls: 4,
-            min_pair_sep_m: 0.08,
+            max_walls: 3,
+            min_pair_sep_m: 0.02,
         }
     }
 }

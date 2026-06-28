@@ -1025,6 +1025,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serialport",
+ "signal-hook-registry",
  "tokio",
  "toml",
  "tracing",

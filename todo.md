@@ -1,5 +1,3 @@
-[] Write the python script to generate walls 
-[] Look if we cannot hook MetricsLog on the telemetry bus might be more efficient and reduce code line amount
-[] consider 1K EDF
-[] median / karman filter to handle tame max(derivative) potential errors
-[] Add in the config a sensor category to pass parameters
+[] sim tuning try to augment the amount of lidar rays, in front and on the sides. 
+[] Look into smooth splines to avg the corridors when they meet (better detected for 90° walls) 
+[] 

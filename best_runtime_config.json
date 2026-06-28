@@ -1,0 +1,123 @@
+{
+  "hz": 100,
+  "perception_mode": "apex",
+  "mapping": {
+    "enabled": false,
+    "queue_capacity": 4
+  },
+  "algo": {
+    "ekf": {
+      "q_accel": 0.7893818,
+      "q_gyro": 0.005,
+      "q_bias_accel": 0.0001,
+      "q_bias_gyro": 0.00001,
+      "r_pos": 0.21575028,
+      "r_yaw": 0.005,
+      "r_zero_vy": 0.7617455,
+      "pose_gate": 16.345684
+    },
+    "perception": {
+      "ransac": {
+        "inlier_dist_m": 0.2,
+        "min_inliers": 9,
+        "iterations": 82,
+        "max_walls": 3,
+        "min_pair_sep_m": 0.02
+      },
+      "min_wall_length_m": 0.060592018
+    },
+    "apex": {
+      "median_window": 3,
+      "min_points": 4,
+      "min_forward_m": 0.0,
+      "min_range_jump_m": 1.1238309,
+      "max_opposite_dist_error_m": 0.05,
+      "max_lookahead_m": 5.1625843,
+      "min_lookahead_m": 0.1,
+      "lookahead_sensitivity": 5.808716,
+      "side_lookahead_fov_deg": 29.19737,
+      "side_lookahead_center_deg": 80.336235
+    },
+    "mapper": {
+      "ransac": {
+        "inlier_dist_m": 0.19068617,
+        "min_inliers": 8,
+        "iterations": 80,
+        "max_walls": 4,
+        "min_pair_sep_m": 0.5
+      },
+      "min_wall_length_m": 0.05,
+      "loop_closure_radius_m": 0.5052869,
+      "loop_closure_residual_good_m": 0.22447756,
+      "loop_closure_overlap_good": 0.1
+    },
+    "scan_match": {
+      "ransac": {
+        "inlier_dist_m": 0.01,
+        "min_inliers": 8,
+        "iterations": 80,
+        "max_walls": 4,
+        "min_pair_sep_m": 0.1650348
+      },
+      "max_match_dist_m": 0.99786454,
+      "max_normal_angle_rad": 0.4342778,
+      "translation_gain": 0.10827,
+      "yaw_gain": 1.0,
+      "min_matches": 4
+    },
+    "particle": {
+      "particles": 96,
+      "sigma_xy_m": 0.40167227,
+      "sigma_yaw_rad": 0.005,
+      "max_points_scored": 23,
+      "score_sigma_m": 0.5710618
+    },
+    "supervisor": {
+      "min_localization_confidence": 0.30892015,
+      "max_loop_closure_residual_m": 0.02,
+      "min_loop_closure_overlap": 0.9,
+      "engage_dwell_ticks": 24,
+      "fallback_dwell_ticks": 6,
+      "min_lap_for_raceline": 1
+    },
+    "reactive": {
+      "stanley": {
+        "k_cross_track": 1.8066726,
+        "softening_speed_ms": 1.9114536,
+        "max_steering_rad": 0.28232467
+      },
+      "pid": {
+        "kp": 1.947985,
+        "ki": 0.49411303,
+        "kd": 0.41954184,
+        "windup_limit": 0.82776254,
+        "max_throttle": 1.0
+      },
+      "speed": {
+        "v_max": 9.859021,
+        "k_heading": 10.0,
+        "k_lateral": 1.2782521,
+        "obstacle_slowdown_m": 4.453044
+      }
+    },
+    "raceline_controller": {
+      "k_lateral": 1.830344,
+      "k_heading": 1.016794,
+      "k_curvature_ff": 0.41059765,
+      "max_steering_rad": 0.09752028,
+      "pid": {
+        "kp": 2.2939386,
+        "ki": 0.5503451,
+        "kd": 0.0,
+        "windup_limit": 0.09869992,
+        "max_throttle": 0.23966461
+      }
+    },
+    "raceline_solver": {
+      "bin_width_m": 0.74650145,
+      "v_max_ms": 1.4925152,
+      "curvature_slowdown": 0.84901035,
+      "smoothing_passes": 1
+    }
+  }
+}

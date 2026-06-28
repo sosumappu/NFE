@@ -152,6 +152,7 @@ pub fn derive_tunable(input: TokenStream) -> TokenStream {
     let mut descriptor_stmts: Vec<TokenStream2> = Vec::new();
     let mut to_flat_stmts: Vec<TokenStream2> = Vec::new();
     let mut from_flat_inits: Vec<TokenStream2> = Vec::new();
+    let mut uses_struct_default = false;
 
     for field in fields {
         let ident = field.ident.as_ref().unwrap();
@@ -265,13 +266,26 @@ pub fn derive_tunable(input: TokenStream) -> TokenStream {
                 });
             }
             Ok(FieldKind::Skip) => {
-                from_flat_inits.push(quote! {
-                    #ident: ::core::default::Default::default(),
-                });
+                uses_struct_default = true;
             }
             Err(e) => return e.to_compile_error().into(),
         }
     }
+
+    let from_flat_body = if uses_struct_default {
+        quote! {
+            Self {
+                #(#from_flat_inits)*
+                ..::core::default::Default::default()
+            }
+        }
+    } else {
+        quote! {
+            Self {
+                #(#from_flat_inits)*
+            }
+        }
+    };
 
     let expanded = quote! {
         impl ::nfe_core::params::Tunable for #name {
@@ -284,9 +298,7 @@ pub fn derive_tunable(input: TokenStream) -> TokenStream {
             }
 
             fn from_flat(prefix: &str, values: &::std::collections::HashMap<::std::string::String, f64>) -> Self {
-                Self {
-                    #(#from_flat_inits)*
-                }
+                #from_flat_body
             }
         }
     };
