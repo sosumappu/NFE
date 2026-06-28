@@ -288,6 +288,8 @@ pub struct DynamicBicycleParams {
     pub lf: f32, // front axle to CoM [m]
     #[serde(alias = "lr_m")]
     pub lr: f32, // rear  axle to CoM [m]
+    #[serde(alias = "track_width_m")]
+    pub track_width: f32, // left/right wheel centre spacing [m]
     #[serde(alias = "mass_kg")]
     pub mass: f32, // kg
     #[serde(alias = "iz_kg_m2")]
@@ -315,6 +317,7 @@ impl Default for DynamicBicycleParams {
             wheelbase: 0.33,
             lf: 0.165,
             lr: 0.165,
+            track_width: 0.18,
             mass: 1.5,
             iz: 0.04,
             cf: 12.0, // typical RC tyre, identified value will be better
@@ -333,15 +336,16 @@ impl Default for DynamicBicycleParams {
 }
 
 pub struct DynamicBicycle {
-    pub wheelbase: f32,  // L  [m]
-    pub lf: f32,         // front axle to CoM [m]
-    pub lr: f32,         // rear  axle to CoM [m]
-    pub mass: f32,       // kg
-    pub iz: f32,         // yaw moment of inertia [kg·m²]
-    pub cf: f32,         // front cornering stiffness [N/rad]
-    pub cr: f32,         // rear  cornering stiffness [N/rad]
-    pub motor_gain: f32, // [m/s² per throttle unit]
-    pub drag_k: f32,     // [m/s² per (m/s)²]
+    pub wheelbase: f32,   // L  [m]
+    pub lf: f32,          // front axle to CoM [m]
+    pub lr: f32,          // rear  axle to CoM [m]
+    pub track_width: f32, // left/right wheel centre spacing [m]
+    pub mass: f32,        // kg
+    pub iz: f32,          // yaw moment of inertia [kg·m²]
+    pub cf: f32,          // front cornering stiffness [N/rad]
+    pub cr: f32,          // rear  cornering stiffness [N/rad]
+    pub motor_gain: f32,  // [m/s² per throttle unit]
+    pub drag_k: f32,      // [m/s² per (m/s)²]
     pub accel_max: f32,
     pub servo: ServoParams,
     pub motor: MotorParams,
@@ -359,6 +363,7 @@ impl DynamicBicycle {
             wheelbase: params.wheelbase,
             lf: params.lf,
             lr: params.lr,
+            track_width: params.track_width,
             mass: params.mass,
             iz: params.iz,
             cf: params.cf,
@@ -382,6 +387,7 @@ impl DynamicBicycle {
             wheelbase: self.wheelbase,
             lf: self.lf,
             lr: self.lr,
+            track_width: self.track_width,
             mass: self.mass,
             iz: self.iz,
             cf: self.cf,
@@ -480,16 +486,31 @@ impl DynamicBicycle {
         }
     }
 
+    fn wheel_force(&self, s: &DynamicState, wheel: WheelSpec) -> WheelForce {
+        let vx_body = s.vx - s.yaw_rate * wheel.y;
+        let vy_body = s.vy + s.yaw_rate * wheel.x;
+        let (sd, cd) = wheel.steer_rad.sin_cos();
+        let v_long = vx_body * cd + vy_body * sd;
+        let v_lat = -vx_body * sd + vy_body * cd;
+        let alpha = -v_lat.atan2(v_long.abs().max(0.05));
+        let lateral_force = self.lateral_force(alpha, wheel.stiffness, wheel.normal_load);
+        let (fx_wheel, fy_wheel) =
+            self.traction_limit(wheel.drive_force, lateral_force, wheel.normal_load);
+
+        let fx = fx_wheel * cd - fy_wheel * sd;
+        let fy = fx_wheel * sd + fy_wheel * cd;
+        WheelForce {
+            fx,
+            fy,
+            mz: wheel.x * fy - wheel.y * fx,
+        }
+    }
+
     fn eom(&self, s: &DynamicState, input: DynamicInput) -> DynamicDeriv {
-        let vx = s.vx.max(0.05); // avoid division by zero at rest
         let vx_motion = s.vx.max(0.0);
         let steering = input.steering_rad;
         let mass = self.mass.max(1e-3);
         let iz = self.iz.max(1e-6);
-
-        // Tyre slip angles; atan keeps the model bounded outside small angles.
-        let alpha_f = steering - ((s.vy + self.lf * s.yaw_rate) / vx).atan();
-        let alpha_r = -((s.vy - self.lr * s.yaw_rate) / vx).atan();
 
         let accel_cmd = input
             .applied_accel_ms2
@@ -497,26 +518,60 @@ impl DynamicBicycle {
         let drag_force = -mass * self.drag_k * vx_motion * vx_motion.abs();
         let (normal_f, normal_r) = self.normal_loads(mass, accel_cmd);
 
-        // Lateral forces. The sign convention is positive left.
-        let fy_f = self.lateral_force(alpha_f, self.cf, normal_f);
-        let fy_r = self.lateral_force(alpha_r, self.cr, normal_r);
-
         let front_fraction = self.drivetrain.front_drive_fraction.clamp(0.0, 1.0);
         let total_drive_force = mass * accel_cmd;
-        let fx_f = total_drive_force * front_fraction;
-        let fx_r = total_drive_force - fx_f;
-        let (fx_f, fy_f) = self.traction_limit(fx_f, fy_f, normal_f);
-        let (fx_r, fy_r) = self.traction_limit(fx_r, fy_r, normal_r);
+        let front_drive = total_drive_force * front_fraction;
+        let rear_drive = total_drive_force - front_drive;
+        let half_track = 0.5 * self.track_width.max(0.0);
 
-        let (sd, cd) = steering.sin_cos();
-        let front_body_fx = fx_f * cd - fy_f * sd;
-        let front_body_fy = fx_f * sd + fy_f * cd;
-        let body_fx = front_body_fx + fx_r + drag_force;
-        let body_fy = front_body_fy + fy_r;
+        let wheels = [
+            WheelSpec {
+                x: self.lf,
+                y: half_track,
+                steer_rad: steering,
+                stiffness: 0.5 * self.cf,
+                normal_load: 0.5 * normal_f,
+                drive_force: 0.5 * front_drive,
+            },
+            WheelSpec {
+                x: self.lf,
+                y: -half_track,
+                steer_rad: steering,
+                stiffness: 0.5 * self.cf,
+                normal_load: 0.5 * normal_f,
+                drive_force: 0.5 * front_drive,
+            },
+            WheelSpec {
+                x: -self.lr,
+                y: half_track,
+                steer_rad: 0.0,
+                stiffness: 0.5 * self.cr,
+                normal_load: 0.5 * normal_r,
+                drive_force: 0.5 * rear_drive,
+            },
+            WheelSpec {
+                x: -self.lr,
+                y: -half_track,
+                steer_rad: 0.0,
+                stiffness: 0.5 * self.cr,
+                normal_load: 0.5 * normal_r,
+                drive_force: 0.5 * rear_drive,
+            },
+        ];
+
+        let mut body_fx = drag_force;
+        let mut body_fy = 0.0;
+        let mut body_mz = 0.0;
+        for wheel in wheels {
+            let force = self.wheel_force(s, wheel);
+            body_fx += force.fx;
+            body_fy += force.fy;
+            body_mz += force.mz;
+        }
 
         let dvx = body_fx / mass + s.vy * s.yaw_rate;
         let dvy = body_fy / mass - vx_motion * s.yaw_rate;
-        let dyaw_rate = (self.lf * front_body_fy - self.lr * fy_r) / iz;
+        let dyaw_rate = body_mz / iz;
 
         let (sy, cy) = s.yaw.sin_cos();
         DynamicDeriv {
@@ -632,6 +687,23 @@ struct DynamicInput {
 }
 
 #[derive(Debug, Clone, Copy)]
+struct WheelSpec {
+    x: f32,
+    y: f32,
+    steer_rad: f32,
+    stiffness: f32,
+    normal_load: f32,
+    drive_force: f32,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct WheelForce {
+    fx: f32,
+    fy: f32,
+    mz: f32,
+}
+
+#[derive(Debug, Clone, Copy)]
 struct DynamicState {
     x: f32,
     y: f32,
@@ -718,6 +790,7 @@ pub struct IdentifiedParams {
     pub wheelbase: f32,
     pub lf: f32,
     pub lr: f32,
+    pub track_width: Option<f32>,
     pub mass: f32,
     pub iz: f32,
     pub cf: f32,
@@ -745,6 +818,7 @@ impl Default for IdentifiedParams {
             wheelbase: d.wheelbase,
             lf: d.lf,
             lr: d.lr,
+            track_width: None,
             mass: d.mass,
             iz: d.iz,
             cf: d.cf,
@@ -793,6 +867,11 @@ impl IdentifiedModel {
         base.wheelbase = params.wheelbase;
         base.lf = params.lf;
         base.lr = params.lr;
+        if let Some(track_width) = params.track_width {
+            base.track_width = track_width;
+        } else {
+            params.track_width = Some(base.track_width);
+        }
         base.mass = params.mass;
         base.iz = params.iz;
         base.cf = params.cf;
@@ -929,6 +1008,48 @@ mod tests {
         });
         let force = model.lateral_force(2.0, model.cf, 5.0);
         assert!(force.abs() <= 5.01);
+    }
+
+    #[test]
+    fn steered_front_drive_force_creates_yaw_moment() {
+        let mut model = DynamicBicycle::from_params(DynamicBicycleParams {
+            cf: 0.0,
+            cr: 0.0,
+            motor_gain: 5.0,
+            drag_k: 0.0,
+            servo: ServoParams {
+                tau_s: 0.0,
+                rate_limit_rad_s: 100.0,
+                backlash_rad: 0.0,
+            },
+            motor: MotorParams {
+                tau_s: 0.0,
+                deadband: 0.0,
+                brake_gain: 1.0,
+            },
+            drivetrain: DrivetrainParams {
+                front_drive_fraction: 1.0,
+                traction_circle: false,
+            },
+            low_speed: LowSpeedParams {
+                blend_start_ms: 0.0,
+                blend_end_ms: 0.1,
+                yaw_rate_margin: 10.0,
+                lateral_damping: 0.0,
+            },
+            ..DynamicBicycleParams::default()
+        });
+        let state = VehicleState {
+            vx: 1.0,
+            ..VehicleState::default()
+        };
+        let cmd = ControlCommand {
+            steering_rad: 0.4,
+            throttle: 1.0,
+        };
+
+        let next = model.step(&state, &cmd, 0.01);
+        assert!(next.yaw_rate > 0.0, "yaw_rate={}", next.yaw_rate);
     }
 
     #[test]

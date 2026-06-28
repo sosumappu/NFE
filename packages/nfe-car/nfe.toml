@@ -67,6 +67,7 @@ accel_max_ms2 = 15.0
 wheelbase_m = 0.21
 lf_m = 0.105
 lr_m = 0.105
+track_width_m = 0.18
 mass_kg = 1.520
 iz_kg_m2 = 0.01465
 cf_n_per_rad = 12.0
