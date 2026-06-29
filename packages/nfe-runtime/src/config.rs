@@ -53,3 +53,28 @@ impl Default for MappingRuntimeConfig {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::RuntimeConfig;
+
+    #[test]
+    fn toml_loads_apex_runtime_params() {
+        let path =
+            std::env::temp_dir().join(format!("nfe-runtime-apex-{}.toml", std::process::id()));
+        std::fs::write(
+            &path,
+            "[algo.apex]\nprefer_nearer_opposite=false\nwall_clearance_m=0.22\napex_switch_threshold_rad=0.45\napex_switch_hysteresis_factor=2.2\n",
+        )
+        .unwrap();
+
+        let config = RuntimeConfig::from_toml_path(&path).unwrap();
+
+        assert!(!config.algo.apex.prefer_nearer_opposite);
+        assert_eq!(config.algo.apex.wall_clearance_m, 0.22);
+        assert_eq!(config.algo.apex.apex_switch_threshold_rad, 0.45);
+        assert_eq!(config.algo.apex.apex_switch_hysteresis_factor, 2.2);
+
+        let _ = std::fs::remove_file(path);
+    }
+}

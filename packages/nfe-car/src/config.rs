@@ -127,6 +127,10 @@ pub struct ApexConfig {
     pub min_forward_m: f32,
     pub min_range_jump_m: f32,
     pub max_opposite_dist_error_m: f32,
+    pub prefer_nearer_opposite: bool,
+    pub wall_clearance_m: f32,
+    pub apex_switch_threshold_rad: f32,
+    pub apex_switch_hysteresis_factor: f32,
     pub max_lookahead_m: f32,
     pub min_lookahead_m: f32,
     pub lookahead_sensitivity: f32,
@@ -142,6 +146,10 @@ impl Default for ApexConfig {
             min_forward_m: 0.05,
             min_range_jump_m: 0.08,
             max_opposite_dist_error_m: 0.75,
+            prefer_nearer_opposite: true,
+            wall_clearance_m: 0.15,
+            apex_switch_threshold_rad: 0.35,
+            apex_switch_hysteresis_factor: 1.8,
             max_lookahead_m: 8.0,
             min_lookahead_m: 0.5,
             lookahead_sensitivity: 5.0,
@@ -359,7 +367,7 @@ mod tests {
         let path = std::env::temp_dir().join(format!("nfe-params-{}.toml", std::process::id()));
         std::fs::write(
             &path,
-            "[control.stanley]\nk_cross_track=3.25\n[control.perception]\nmode='apex'\n[control.perception.ransac]\niterations=123\nmax_walls=6\n[control.perception.apex]\nmedian_window=5\n",
+            "[control.stanley]\nk_cross_track=3.25\n[control.perception]\nmode='apex'\n[control.perception.ransac]\niterations=123\nmax_walls=6\n[control.perception.apex]\nmedian_window=5\nprefer_nearer_opposite=false\nwall_clearance_m=0.22\napex_switch_threshold_rad=0.45\napex_switch_hysteresis_factor=2.2\n",
         )
         .unwrap();
 
@@ -373,6 +381,16 @@ mod tests {
         assert_eq!(config.control.perception.ransac.inlier_dist_m, 0.2);
         assert_eq!(config.control.perception.apex.median_window, 5);
         assert_eq!(config.control.perception.apex.min_points, 8);
+        assert!(!config.control.perception.apex.prefer_nearer_opposite);
+        assert_eq!(config.control.perception.apex.wall_clearance_m, 0.22);
+        assert_eq!(
+            config.control.perception.apex.apex_switch_threshold_rad,
+            0.45
+        );
+        assert_eq!(
+            config.control.perception.apex.apex_switch_hysteresis_factor,
+            2.2
+        );
 
         let _ = std::fs::remove_file(path);
     }

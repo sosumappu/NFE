@@ -447,6 +447,13 @@ fn runtime_config_from_car(config: &Config) -> RuntimeConfig {
     runtime.algo.apex.min_range_jump_m = config.control.perception.apex.min_range_jump_m;
     runtime.algo.apex.max_opposite_dist_error_m =
         config.control.perception.apex.max_opposite_dist_error_m;
+    runtime.algo.apex.prefer_nearer_opposite =
+        config.control.perception.apex.prefer_nearer_opposite;
+    runtime.algo.apex.wall_clearance_m = config.control.perception.apex.wall_clearance_m;
+    runtime.algo.apex.apex_switch_threshold_rad =
+        config.control.perception.apex.apex_switch_threshold_rad;
+    runtime.algo.apex.apex_switch_hysteresis_factor =
+        config.control.perception.apex.apex_switch_hysteresis_factor;
     runtime.algo.apex.max_lookahead_m = config.control.perception.apex.max_lookahead_m;
     runtime.algo.apex.min_lookahead_m = config.control.perception.apex.min_lookahead_m;
     runtime.algo.apex.lookahead_sensitivity = config.control.perception.apex.lookahead_sensitivity;
@@ -487,6 +494,10 @@ mod tests {
         config.control.perception.ransac.min_pair_sep_m = 0.09;
         config.control.perception.apex.median_window = 5;
         config.control.perception.apex.min_range_jump_m = 0.4;
+        config.control.perception.apex.prefer_nearer_opposite = false;
+        config.control.perception.apex.wall_clearance_m = 0.22;
+        config.control.perception.apex.apex_switch_threshold_rad = 0.45;
+        config.control.perception.apex.apex_switch_hysteresis_factor = 2.2;
         config.control.stanley.k_cross_track = 4.0;
         config.control.stanley.softening_speed_ms = 0.5;
         config.control.stanley.max_steering_rad = 0.44;
@@ -504,6 +515,10 @@ mod tests {
         assert_eq!(runtime.algo.perception.ransac.min_pair_sep_m, 0.09);
         assert_eq!(runtime.algo.apex.median_window, 5);
         assert_eq!(runtime.algo.apex.min_range_jump_m, 0.4);
+        assert!(!runtime.algo.apex.prefer_nearer_opposite);
+        assert_eq!(runtime.algo.apex.wall_clearance_m, 0.22);
+        assert_eq!(runtime.algo.apex.apex_switch_threshold_rad, 0.45);
+        assert_eq!(runtime.algo.apex.apex_switch_hysteresis_factor, 2.2);
         assert_eq!(runtime.algo.reactive.stanley.k_cross_track, 4.0);
         assert_eq!(runtime.algo.reactive.stanley.softening_speed_ms, 0.5);
         assert_eq!(runtime.algo.reactive.stanley.max_steering_rad, 0.44);

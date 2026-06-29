@@ -657,6 +657,9 @@ mod tests {
         cfg.algo.apex.median_window = 1;
         cfg.algo.apex.min_points = 4;
         cfg.algo.apex.min_range_jump_m = 0.2;
+        cfg.algo.apex.min_lookahead_m = 8.0;
+        cfg.algo.apex.max_lookahead_m = 8.0;
+        cfg.algo.apex.lookahead_sensitivity = 0.0;
         let mut p = Pipeline::new(cfg, EstimatorMode::DeadReckon);
         p.reset(Pose2::default(), 0);
         let out = p.step(apex_snapshot(10_000));
