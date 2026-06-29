@@ -43,7 +43,7 @@ use crate::types::{LidarCloud, LidarPoint};
 
 /// Clockwise angle offset (degrees) from the LIDAR's 0° reference to the
 /// car's true forward direction.
-pub const LIDAR_ROTATION_OFFSET_DEG: f32 = 0.0;
+pub const LIDAR_ROTATION_OFFSET_DEG: f32 = -90.0;
 
 /// Half-width of the "front" arc (centred on 0°) that gets fine resolution.
 pub const FRONT_HALF_ARC_DEG: f32 = 45.0;
@@ -52,10 +52,10 @@ pub const FRONT_HALF_ARC_DEG: f32 = 45.0;
 pub const DTHETA_FRONT_DEG: f32 = 1.0;
 
 /// Bucket size for the side arcs (|angle| between FRONT_HALF_ARC and 90°).
-pub const DTHETA_SIDES_DEG: f32 = 5.0;
+pub const DTHETA_SIDES_DEG: f32 = 1.0;
 
 /// Bucket size for the rear arc (|angle| > 90°).
-pub const DTHETA_REAR_DEG: f32 = 10.0;
+pub const DTHETA_REAR_DEG: f32 = 3.0;
 
 /// Minimum valid distance (metres). Below this = LIDAR crosstalk / noise.
 pub const DIST_MIN_M: f32 = 0.10;

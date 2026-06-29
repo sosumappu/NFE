@@ -60,23 +60,59 @@
   networking.firewall = {
     enable = true;
     allowedTCPPorts = [22];
-    allowedUDPPorts = [5353]; # mDNS — reach as nfe.local
+    allowedUDPPorts = [67 5353]; # DHCP + mDNS — reach as nfe.local
     logRefusedConnections = false;
   };
   systemd.network.networks = {
     "99-ethernet-default-dhcp".networkConfig.MulticastDNS = "yes";
-    "99-wireless-client-dhcp".networkConfig.MulticastDNS = "yes";
+    "30-wlan0-ap" = {
+      matchConfig.Name = "wlan0";
+      address = ["192.168.50.1/24"];
+      networkConfig = {
+        DHCPServer = "yes";
+        LinkLocalAddressing = "no";
+        MulticastDNS = "yes";
+      };
+      dhcpServerConfig = {
+        PoolOffset = 10;
+        PoolSize = 40;
+        EmitDNS = false;
+        EmitRouter = false;
+        PersistLeases = true;
+      };
+    };
   };
+
   networking = {
-    wireless = {
-      enable = true;
-      networks = {
-        "Freebox-0B1620" = {
-          pskRaw = "caa3fbb62dfe3db0afd267a52470f178e574bf985145a1f51c0caaf0c54b13f9";
+    # The Pi exposes its own AP for field deploy/debug. Deploy-rs copies the
+    # locally-built closure over SSH, so the car does not need upstream WiFi.
+    wireless.enable = lib.mkForce false;
+    networkmanager.enable = lib.mkForce false;
+  };
+
+  services.hostapd = {
+    enable = true;
+    radios.wlan0 = {
+      band = "2g";
+      channel = 6;
+      networks.wlan0 = {
+        ssid = "NFE";
+        authentication = {
+          mode = "wpa2-sha256";
+          wpaPassword = "neverfastenough";
         };
       };
     };
-    networkmanager.enable = lib.mkForce false;
+  };
+
+  services.avahi = {
+    enable = true;
+    nssmdns4 = true;
+    publish = {
+      enable = true;
+      addresses = true;
+      workstation = true;
+    };
   };
 
   hardware.i2c.enable = true; # IMU (6-DOF)
@@ -147,7 +183,6 @@
   services.car = {
     enable = true;
     package = pkgs.nfe-car;
-    requireStartGate = true;
   };
 
   environment.systemPackages = with pkgs; [

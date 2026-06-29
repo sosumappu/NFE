@@ -45,14 +45,14 @@ min_forward_m = 0.5
 min_range_jump_m = 0.15
 max_opposite_dist_error_m = 0.05
 prefer_nearer_opposite = true
-wall_clearance_m = 0.15
-apex_switch_threshold_rad = 0.35
-apex_switch_hysteresis_factor = 1.8
-max_lookahead_m = 7.0
+wall_clearance_m = 0.25
+apex_switch_threshold_rad = 0.1
+apex_switch_hysteresis_factor = 2.8
+max_lookahead_m = 8.0
 min_lookahead_m = 0.5
-lookahead_sensitivity = 1.0
+lookahead_sensitivity = 5.0
 side_lookahead_fov_deg = 30.0
-side_lookahead_center_deg = 80.0
+side_lookahead_center_deg = 90.0
 
 [live]
 lidar_port = "/dev/lidar"
@@ -69,12 +69,12 @@ accel_max_ms2 = 15.0
 
 [sim.dynamic]
 wheelbase_m = 0.21
-lf_m = 0.105
-lr_m = 0.105
-track_width_m = 0.145
-mass_kg = 1.520
+lf_m = 0.12
+lr_m = 0.09
+track_width_m = 0.14
+mass_kg = 1.504
 iz_kg_m2 = 0.01465
-cf_n_per_rad = 12.0
+cf_n_per_rad = 14.0
 cr_n_per_rad = 10.0
 motor_gain_ms2 = 20
 drag_k = 0.5

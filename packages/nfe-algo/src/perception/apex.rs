@@ -19,7 +19,7 @@ mod geometry;
 mod scan;
 mod tracking;
 
-const APEX_HOLD_MIN_CONFIDENCE: f32 = 0.3;
+const APEX_HOLD_MIN_CONFIDENCE: f32 = 0.5;
 const APEX_REMEMBER_MIN_CONFIDENCE: f32 = 0.3;
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize, Tunable)]
@@ -43,16 +43,16 @@ pub struct ApexParams {
     #[tunable(skip)]
     pub prefer_nearer_opposite: bool,
 
-    #[param(0.0..1.0, default = 0.15)]
+    #[param(0.0..1.0, default = 0.25)]
     pub wall_clearance_m: f32,
 
-    #[param(0.0..PI, default = 0.35)]
+    #[param(0.0..PI, default = 0.1)]
     pub apex_switch_threshold_rad: f32,
 
-    #[param(1.0..10.0, default = 1.8)]
+    #[param(1.0..10.0, default = 2.8)]
     pub apex_switch_hysteresis_factor: f32,
 
-    #[param(1.0..20.0, default = 7.0)]
+    #[param(1.0..20.0, default = 8.0)]
     pub max_lookahead_m: f32,
 
     #[param(0.1..5.0, default = 0.5)]
@@ -64,7 +64,7 @@ pub struct ApexParams {
     #[param(1.0..360.0, default = 30.0)]
     pub side_lookahead_fov_deg: f32,
 
-    #[param(1.0..360.0, default = 80.0)]
+    #[param(1.0..360.0, default = 90.0)]
     pub side_lookahead_center_deg: f32,
 }
 
