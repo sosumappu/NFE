@@ -14,7 +14,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use rppal::gpio::{Gpio, InputPin, Level, OutputPin, Trigger};
+use rppal::gpio::{Event, Gpio, InputPin, Level, OutputPin, Trigger};
 use tracing::{debug, info, warn};
 
 use crate::init::ReadySignal;
@@ -158,11 +158,12 @@ fn run(
     let t0_2 = t0;
 
     // ← was .expect(...) — now we degrade gracefully
-    if let Err(e) = echo.set_async_interrupt(Trigger::Both, move |level| {
+    if let Err(e) = echo.set_async_interrupt(Trigger::Both, None, move |event: Event| {
         let us = t0_2.elapsed().as_micros() as u32;
-        match level {
-            Level::High => rise_us2.store(us, Ordering::Release),
-            Level::Low => fall_us2.store(us, Ordering::Release),
+        match event.trigger {
+            Trigger::RisingEdge => rise_us2.store(us, Ordering::Release),
+            Trigger::FallingEdge => fall_us2.store(us, Ordering::Release),
+            _ => {}
         }
     }) {
         warn!(

@@ -24,7 +24,7 @@ mod linux_hw {
         time::{Duration, Instant},
     };
 
-    use rppal::{gpio::Gpio, i2c::I2c, pwm::Pwm};
+    use rppal::{gpio::Gpio, i2c::I2c};
     use serialport::SerialPort;
 
     // ── Shared constants (mirror the main binary) ──────────────────────────────
@@ -44,7 +44,7 @@ mod linux_hw {
 
     // ── Entry ──────────────────────────────────────────────────────────────────
 
-    fn main() {
+    pub fn run() {
         let args: Vec<String> = std::env::args().collect();
         let cmd = args.get(1).map(String::as_str).unwrap_or("help");
         let once = args.iter().any(|a| a == "--once");
@@ -403,6 +403,11 @@ mod linux_hw {
         println!("  ✗ FAIL  {msg}");
         std::process::exit(1);
     }
+}
+
+#[cfg(target_os = "linux")]
+fn main() {
+    linux_hw::run();
 }
 
 // Add this fallback for your Mac!

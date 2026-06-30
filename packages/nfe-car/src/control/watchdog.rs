@@ -1,5 +1,3 @@
-#[cfg(target_os = "linux")]
-use libsystemd::daemon::{self, NotifyState};
 /// control/watchdog.rs — software watchdog for the control loop
 ///
 /// The control loop calls `kick()` every tick.

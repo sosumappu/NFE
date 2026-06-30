@@ -9,24 +9,24 @@ estop_dist_m = 0.30
 lqr = [0.80, 0.30, 1.20, 0.40]
 
 [control.speed]
-v_max = 10
+v_max = 9.6
 # greater = more speed linear k_dist * dist_to_waypoint
-k_lateral = 1.0
+k_lateral = 9.44
 # greater = less speed 1 - k_heading * steering^2
-k_heading = 5
-obstacle_slowdown_m = 2.8
+k_heading = 7.04
+obstacle_slowdown_m = 0.09
 
 [control.pid]
-kp = 1.8           # proportional factor
-ki = 0.15          # integral factor
-kd = 0.4           # derivative factor
-windup_limit = 0.0
-max_throttle = 1.0 # WARN: put pid to 0.2 on live tests
+kp = 8.12           # proportional factor
+ki = 0.98           # integral factor
+kd = 0.0            # derivative factor
+windup_limit = 5.56
+max_throttle = 1.0  # WARN: put pid to 0.2 on live tests
 
 [control.stanley]
-k_cross_track = 2.5
-softening_speed_ms = 3.0
-max_steering_rad = 0.28
+k_cross_track = 1.0
+softening_speed_ms = 15.0
+max_steering_rad = 0.7
 
 [control.perception]
 mode = "apex"
@@ -41,18 +41,18 @@ min_pair_sep_m = 0.1
 [control.perception.apex]
 median_window = 3
 min_points = 4
-min_forward_m = 0.5
-min_range_jump_m = 0.15
+min_forward_m = 1.0
+min_range_jump_m = 0.03
 max_opposite_dist_error_m = 0.05
 prefer_nearer_opposite = true
-wall_clearance_m = 0.25
-apex_switch_threshold_rad = 0.1
-apex_switch_hysteresis_factor = 2.8
-max_lookahead_m = 8.0
-min_lookahead_m = 0.5
-lookahead_sensitivity = 5.0
-side_lookahead_fov_deg = 30.0
-side_lookahead_center_deg = 90.0
+wall_clearance_m = 1.0
+apex_switch_threshold_rad = 0.00
+apex_switch_hysteresis_factor = 6.26
+max_lookahead_m = 15.0
+min_lookahead_m = 1.8
+lookahead_sensitivity = 1.7
+side_lookahead_fov_deg = 32.0
+side_lookahead_center_deg = 80.0
 
 [live]
 lidar_port = "/dev/lidar"
