@@ -167,7 +167,7 @@ pub(super) fn nearest_front_obstacle_m(cloud: &LidarCloud) -> f32 {
     cloud
         .nearest_in_arc(0.0, PI / 12.0)
         .map(|p| p.dist_m)
-        .unwrap_or(0.0)
+        .unwrap_or(f32::INFINITY)
 }
 
 pub(super) fn nearest_obstacle_m(cloud: &LidarCloud) -> f32 {

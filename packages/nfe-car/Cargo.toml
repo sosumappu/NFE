@@ -44,6 +44,7 @@ toml = "0.8.19"
 nfe-core = { path = "../nfe-core" }
 nfe-runtime = { path = "../nfe-runtime" }
 nfe-sim = { path = "../nfe-sim" }
+nfe-tuner = { path = "../nfe-tuner" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 rppal = "0.22.1"

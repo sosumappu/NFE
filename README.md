@@ -43,6 +43,7 @@ packages/
   nfe-algo            pure algorithm code: perception, estimation, control, supervisor
   nfe-runtime         pipeline orchestration, TelemetryBus, McapSink, StartGate, mode wiring
   nfe-sim             simulation crate: world model, vehicle dynamics, sensor synthesis, noise
+  nfe-tuner           optimizer-independent search space, candidates, scores, and sim evaluation
   nfe-car             thin wiring crate, produces all binaries
 ```
 
@@ -55,7 +56,8 @@ packages/
 | `nfe-algo`           | Pure algorithm implementation: RANSAC/corridor perception, EKF/dead-reckon estimation, localization, mapping, supervisor, LQR/PID/speed/reactive control, raceline components | `nfe-core`                                                   |
 | `nfe-sim`            | Deterministic simulation source, world model, vehicle dynamics, synthetic sensors, noise                                                                                      | `nfe-core` only                                              |
 | `nfe-runtime`        | `Pipeline::step`, `TelemetryBus`, MCAP input replay, `McapSink`, StartGate, runtime tuning helpers, mapping worker/session glue                                               | `nfe-core`, `nfe-algo`                                       |
-| `nfe-car`            | Hardware adapters, config/CLI parsing, system mode dispatch, diagnostics, tuning binary, arming helper                                                                        | `nfe-core`, `nfe-runtime`, `nfe-sim`, hardware/system crates |
+| `nfe-tuner`          | Optimizer-independent tuning search-space JSON, flat candidate application, candidate scores, and sim lap evaluation                                                          | `nfe-core`, `nfe-runtime`, `nfe-sim`                         |
+| `nfe-car`            | Hardware adapters, config/CLI parsing, system mode dispatch, diagnostics, tuning binary, arming helper                                                                        | `nfe-core`, `nfe-runtime`, `nfe-sim`, `nfe-tuner`, hardware/system crates |
 
 `nfe-algo` is kept pure so the control algorithms can be tested
 deterministically and reused in simulation, replay, and future map-based modes
@@ -107,6 +109,8 @@ struct.
 
 ```bash
 car-tune --sim worlds/track.json --out best_runtime_config.json --generations 200 --episode-s 90 --target-laps 3 --target-speed 3.0 --eval-seeds 3 --sim-seed 42 --parallel --progress
+car-tune --dump-search-space --param-prefix algo.apex --out search_space.json
+car-tune --sim worlds/track.json --config packages/nfe-car/nfe.toml --candidate candidate.json --score-out score.json
 car-tune --replay /tmp/run.mcap --out best_runtime_config.json --generations 80 --episode-s 20 --parallel --progress
 car-tune --live --out best_runtime_config.json --generations 10 --episode-s 5 --progress
 ```
@@ -119,7 +123,7 @@ Options:
 | `--replay <file.mcap>`                         | Evaluate candidates against recorded MCAP sensor input                               |
 | `--live`                                       | Sensor-only live dry-run evaluation; non-deterministic and intended for diagnostics  |
 | `--out <path>`                                 | Output tuned runtime config; default `best_runtime_config.json`                      |
-| `--config <path>`                              | Base `RuntimeConfig` TOML; defaults to runtime defaults                              |
+| `--config <path>`                              | Base car `nfe.toml` or `RuntimeConfig` TOML; defaults to runtime defaults            |
 | `--generations <n>`                            | CMA-ES generation limit; default `200`                                               |
 | `--episode-s <seconds>`                        | Episode duration cap; default `30.0`                                                 |
 | `--model <kinematic|dynamic|identified>`       | Simulator model; default `kinematic`                                                 |
@@ -133,6 +137,10 @@ Options:
 | `--sigma <f64>`                                | CMA-ES initial sigma; default `0.3`                                                  |
 | `--parallel`                                   | Evaluate CMA-ES candidates in parallel for sim/replay only; ignored for live mode    |
 | `--progress`                                   | Print one progress line per generation                                               |
+| `--dump-search-space`                          | Write JSON `SearchSpaceEntry[]` to `--out` and exit                                  |
+| `--param-prefix <prefix>`                      | Restrict search-space entries; can be repeated, e.g. `algo.apex` and `algo.reactive` |
+| `--candidate <path>`                           | Evaluate one flat candidate JSON instead of running CMA-ES                           |
+| `--score-out <path>`                           | Write the single-candidate `CandidateScore` JSON                                     |
 
 The output `best_runtime_config.json` is a serialized `RuntimeConfig` containing
 the best candidate found by the search. It can be inspected directly, used as a
@@ -348,14 +356,28 @@ ssh localhost@nfe.local 'nfe-arm --disarm --host 127.0.0.1 --port 4578 --token n
 
 ## Tuning
 
-`car-tune` gets its search space from the runtime/algo `Tunable` registry and
-evaluates every candidate through `Pipeline::step`.
+`car-tune` gets its search space from the runtime/algo `Tunable` registry through `nfe-tuner` and evaluates every candidate through `Pipeline::step`.
 
 Simulation episode tuning:
 
 ```bash
 car-tune --sim worlds/track.json --sim-seed 42 --episode-s 90 --target-laps 3 --target-speed 3.0 --eval-seeds 3 --generations 200 --out best_runtime_config.json --parallel --progress
 ```
+
+Optuna TPE tuning via the UV-managed tools project:
+
+```bash
+cd tools
+uv run nfe-tune-optuna --car-tune ../target/release/car-tune --sim ../worlds/tracks/minispa.json --config ../packages/nfe-car/nfe.toml --trials 500 --out ../runs/tuning/optuna-best-runtime-config.json
+```
+
+Inside `nix develop`, the same default apex tuning run is available from the repository root:
+
+```bash
+nfe-tune-apex
+```
+
+Extra flags can be appended to override defaults, for example `nfe-tune-apex --trials 50 --storage sqlite:///runs/tuning/apex-smoke.db`.
 
 Replay episode tuning:
 
@@ -371,10 +393,7 @@ car-tune --live --episode-s 5 --generations 10 --out best_runtime_config.json
 
 Simulation is the preferred deterministic tuning path. Sim tuning is closed-loop: `Pipeline::step` commands are applied to `SimulatorSource`, and the objective requires waypoint-based lap progress instead of rewarding stationary low-control episodes. `world.waypoints` must contain at least two points for sim lap tuning. Replay evaluates against fixed recorded sensor input with the generic sensor-only objective. Both sim and replay support `--parallel`, which evaluates each CMA-ES generation's independent candidates through Rayon; set `RAYON_NUM_THREADS=<n>` to bound worker count. Live tuning is sensor-only/dry-run and non-deterministic because each candidate observes current hardware state rather than the same episode, so `--parallel` is ignored in live mode.
 
-`best_runtime_config.json` contains a pretty-printed serialized `RuntimeConfig`
-produced by applying the best CMA-ES vector through `config_from_vector`;
-integer parameters are rounded/clamped by the tunable registry when
-materialized.
+`best_runtime_config.json` contains a pretty-printed serialized `RuntimeConfig` produced by applying the best candidate onto the base runtime config; integer parameters are rounded/clamped by the tunable registry when materialized. `--config packages/nfe-car/nfe.toml` uses the same car-config-to-runtime conversion as live mode so tuned `[control.*]` values survive the runtime mapping.
 
 ## Telemetry and visualization
 

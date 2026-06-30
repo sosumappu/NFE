@@ -3,3 +3,8 @@
 **/result/
 **/sessions/
 best_runtime_config.json
+.mypy_cache/
+tools/.venv/
+tools/.mypy_cache/
+runs/tuning/*.db
+runs/tuning/*.json

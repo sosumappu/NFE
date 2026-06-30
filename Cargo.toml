@@ -6,6 +6,7 @@ members = [
   "packages/nfe-runtime",
   "packages/nfe-sim",
   "packages/nfe-tunable-derive",
+  "packages/nfe-tuner",
 ]
 resolver = "2"
 

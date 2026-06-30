@@ -1,9 +1,9 @@
 use std::path::Path;
 
 use nfe_runtime::pipeline::PerceptionMode;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Default, Clone, Debug, Deserialize)]
+#[derive(Default, Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Config {
     pub control: ControlConfig,
@@ -39,7 +39,7 @@ impl Config {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub struct ControlConfig {
     pub kinematics_horizon: usize,
@@ -66,12 +66,7 @@ impl Default for ControlConfig {
                 max_throttle: 1.0,
             },
             perception: PerceptionConfig::default(),
-            speed: SpeedConfig {
-                v_max: 1.8,
-                k_lateral: 1.0,
-                k_heading: 5.0,
-                obstacle_slowdown_m: 3.0,
-            },
+            speed: SpeedConfig::default(),
             stanley: StanleyConfig::default(),
             kinematics_horizon: 500,
             hz: 100,
@@ -79,7 +74,7 @@ impl Default for ControlConfig {
         }
     }
 }
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(default)]
 pub struct PerceptionConfig {
     pub mode: PerceptionMode,
@@ -97,7 +92,7 @@ impl Default for PerceptionConfig {
     }
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(default)]
 pub struct RansacConfig {
     pub inlier_dist_m: f32,
@@ -119,7 +114,7 @@ impl Default for RansacConfig {
     }
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(default)]
 pub struct ApexConfig {
     pub median_window: usize,
@@ -136,6 +131,7 @@ pub struct ApexConfig {
     pub lookahead_sensitivity: f32,
     pub side_lookahead_fov_deg: f32,
     pub side_lookahead_center_deg: f32,
+    pub apex_lookahead_weight: f32,
 }
 
 impl Default for ApexConfig {
@@ -155,11 +151,12 @@ impl Default for ApexConfig {
             lookahead_sensitivity: 5.0,
             side_lookahead_fov_deg: 80.0,
             side_lookahead_center_deg: 90.0,
+            apex_lookahead_weight: 0.75,
         }
     }
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct PidConfig {
     pub kp: f32,
     pub ki: f32,
@@ -168,14 +165,34 @@ pub struct PidConfig {
     pub max_throttle: f32,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(default)]
 pub struct SpeedConfig {
     pub v_max: f32,
+    pub v_min: f32,
     pub k_lateral: f32,
     pub k_heading: f32,
     pub obstacle_slowdown_m: f32,
+    pub a_lat_max_ms2: f32,
+    pub accel_limit_ms2: f32,
+    pub decel_limit_ms2: f32,
 }
-#[derive(Debug, Deserialize, Clone)]
+
+impl Default for SpeedConfig {
+    fn default() -> Self {
+        Self {
+            v_max: 1.8,
+            v_min: 0.35,
+            k_lateral: 2.0,
+            k_heading: 2.0,
+            obstacle_slowdown_m: 3.0,
+            a_lat_max_ms2: 3.0,
+            accel_limit_ms2: 1.5,
+            decel_limit_ms2: 5.0,
+        }
+    }
+}
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(default)]
 pub struct StanleyConfig {
     pub k_cross_track: f32,
@@ -193,7 +210,7 @@ impl Default for StanleyConfig {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub struct StartGateConfig {
     pub udp_bind: String,
@@ -219,7 +236,7 @@ impl Default for StartGateConfig {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub struct LiveConfig {
     pub lidar_port: String,
@@ -233,7 +250,7 @@ impl Default for LiveConfig {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub struct SimConfig {
     #[serde(flatten)]
@@ -255,7 +272,7 @@ impl Default for SimConfig {
 }
 
 // ── Safety configuration (tunable constants moved out of code) ───────────-
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub struct SafetyConfig {
     pub wheelbase_m: f32,
@@ -297,7 +314,7 @@ impl Default for SafetyConfig {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub struct InitConfig {
     pub timeout_secs: u64,

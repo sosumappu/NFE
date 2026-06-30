@@ -100,6 +100,9 @@ impl CorridorPerception for RansacCorridorPerception {
             lateral_error_m,
             lateral_rate_m_s,
             heading_error_rad,
+            target_x_m: 0.0,
+            target_y_m: lateral_error_m,
+            curvature_m_inv: 0.0,
             nearest_obstacle_m: nearest,
             confidence,
         }

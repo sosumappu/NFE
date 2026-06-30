@@ -94,7 +94,9 @@ pub struct World {
 
 #[derive(Deserialize)]
 struct JsonWorld {
+    #[serde(alias = "inner_wall")]
     inner_walls: Vec<[f32; 2]>,
+    #[serde(alias = "outer_wall")]
     outer_walls: Vec<[f32; 2]>,
     start: JsonStart,
     #[serde(default)]

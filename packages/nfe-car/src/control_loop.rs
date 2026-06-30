@@ -323,6 +323,9 @@ pub async fn run(
             loop_us,
             lateral_error_m: output.corridor.lateral_error_m,
             heading_error_rad: output.corridor.heading_error_rad,
+            target_x_m: output.corridor.target_x_m,
+            target_y_m: output.corridor.target_y_m,
+            curvature_m_inv: output.corridor.curvature_m_inv,
             steering_rad: steering,
             throttle,
             target_speed_ms: command.target_speed_ms,
@@ -363,6 +366,11 @@ pub async fn run(
                 steering = format!("{steering:.3}"),
                 throttle = format!("{throttle:.3}"),
                 lat_err = format!("{:.3}", output.corridor.lateral_error_m),
+                target = format!(
+                    "{:.2},{:.2}",
+                    output.corridor.target_x_m, output.corridor.target_y_m
+                ),
+                curvature = format!("{:.3}", output.corridor.curvature_m_inv),
                 nearest = format!("{:.2}", output.corridor.nearest_obstacle_m),
                 mode = format!("{:?}", output.drive_mode),
                 "tick"
@@ -420,63 +428,8 @@ impl Drop for ShutdownSignals {
 }
 
 fn runtime_config_from_car(config: &Config) -> RuntimeConfig {
-    let mut runtime = RuntimeConfig {
-        hz: config.control.hz,
-        mapping: nfe_runtime::config::MappingRuntimeConfig {
-            enabled: false,
-            ..Default::default()
-        },
-        ..Default::default()
-    };
-    runtime.perception_mode = config.control.perception.mode;
-    // With ReativeController based LQR
-    // runtime.algo.reactive.lqr.k_lateral = config.control.lqr[0];
-    // runtime.algo.reactive.lqr.k_lateral_rate = config.control.lqr[1];
-    // runtime.algo.reactive.lqr.k_heading = config.control.lqr[2];
-    // runtime.algo.reactive.lqr.k_yaw_rate = config.control.lqr[3];
-    // ransac
-    runtime.algo.perception.ransac.inlier_dist_m = config.control.perception.ransac.inlier_dist_m;
-    runtime.algo.perception.ransac.min_inliers = config.control.perception.ransac.min_inliers;
-    runtime.algo.perception.ransac.iterations = config.control.perception.ransac.iterations;
-    runtime.algo.perception.ransac.max_walls = config.control.perception.ransac.max_walls;
-    runtime.algo.perception.ransac.min_pair_sep_m = config.control.perception.ransac.min_pair_sep_m;
-    //apex
-    runtime.algo.apex.median_window = config.control.perception.apex.median_window;
-    runtime.algo.apex.min_points = config.control.perception.apex.min_points;
-    runtime.algo.apex.min_forward_m = config.control.perception.apex.min_forward_m;
-    runtime.algo.apex.min_range_jump_m = config.control.perception.apex.min_range_jump_m;
-    runtime.algo.apex.max_opposite_dist_error_m =
-        config.control.perception.apex.max_opposite_dist_error_m;
-    runtime.algo.apex.prefer_nearer_opposite =
-        config.control.perception.apex.prefer_nearer_opposite;
-    runtime.algo.apex.wall_clearance_m = config.control.perception.apex.wall_clearance_m;
-    runtime.algo.apex.apex_switch_threshold_rad =
-        config.control.perception.apex.apex_switch_threshold_rad;
-    runtime.algo.apex.apex_switch_hysteresis_factor =
-        config.control.perception.apex.apex_switch_hysteresis_factor;
-    runtime.algo.apex.max_lookahead_m = config.control.perception.apex.max_lookahead_m;
-    runtime.algo.apex.min_lookahead_m = config.control.perception.apex.min_lookahead_m;
-    runtime.algo.apex.lookahead_sensitivity = config.control.perception.apex.lookahead_sensitivity;
-    runtime.algo.apex.side_lookahead_fov_deg =
-        config.control.perception.apex.side_lookahead_fov_deg;
-    runtime.algo.apex.side_lookahead_center_deg =
-        config.control.perception.apex.side_lookahead_center_deg;
-    // stanley
-    runtime.algo.reactive.stanley.k_cross_track = config.control.stanley.k_cross_track;
-    runtime.algo.reactive.stanley.softening_speed_ms = config.control.stanley.softening_speed_ms;
-    runtime.algo.reactive.stanley.max_steering_rad = config.control.stanley.max_steering_rad;
-    // pid
-    runtime.algo.reactive.pid.kp = config.control.pid.kp;
-    runtime.algo.reactive.pid.ki = config.control.pid.ki;
-    runtime.algo.reactive.pid.kd = config.control.pid.kd;
-    runtime.algo.reactive.pid.windup_limit = config.control.pid.windup_limit;
-    runtime.algo.reactive.pid.max_throttle = config.control.pid.max_throttle;
-    // speed planer
-    runtime.algo.reactive.speed.v_max = config.control.speed.v_max;
-    runtime.algo.reactive.speed.k_lateral = config.control.speed.k_lateral;
-    runtime.algo.reactive.speed.k_heading = config.control.speed.k_heading;
-    runtime.algo.reactive.speed.obstacle_slowdown_m = config.control.speed.obstacle_slowdown_m;
-    runtime
+    nfe_tuner::runtime_config_from_car_config(config)
+        .expect("car config should convert to runtime config")
 }
 
 #[cfg(test)]
@@ -498,9 +451,14 @@ mod tests {
         config.control.perception.apex.wall_clearance_m = 0.22;
         config.control.perception.apex.apex_switch_threshold_rad = 0.45;
         config.control.perception.apex.apex_switch_hysteresis_factor = 2.2;
+        config.control.perception.apex.apex_lookahead_weight = 0.6;
         config.control.stanley.k_cross_track = 4.0;
         config.control.stanley.softening_speed_ms = 0.5;
         config.control.stanley.max_steering_rad = 0.44;
+        config.control.speed.v_min = 0.42;
+        config.control.speed.a_lat_max_ms2 = 3.7;
+        config.control.speed.accel_limit_ms2 = 1.2;
+        config.control.speed.decel_limit_ms2 = 4.5;
 
         let runtime = runtime_config_from_car(&config);
 
@@ -519,9 +477,14 @@ mod tests {
         assert_eq!(runtime.algo.apex.wall_clearance_m, 0.22);
         assert_eq!(runtime.algo.apex.apex_switch_threshold_rad, 0.45);
         assert_eq!(runtime.algo.apex.apex_switch_hysteresis_factor, 2.2);
+        assert_eq!(runtime.algo.apex.apex_lookahead_weight, 0.6);
         assert_eq!(runtime.algo.reactive.stanley.k_cross_track, 4.0);
         assert_eq!(runtime.algo.reactive.stanley.softening_speed_ms, 0.5);
         assert_eq!(runtime.algo.reactive.stanley.max_steering_rad, 0.44);
+        assert_eq!(runtime.algo.reactive.speed.v_min, 0.42);
+        assert_eq!(runtime.algo.reactive.speed.a_lat_max_ms2, 3.7);
+        assert_eq!(runtime.algo.reactive.speed.accel_limit_ms2, 1.2);
+        assert_eq!(runtime.algo.reactive.speed.decel_limit_ms2, 4.5);
     }
 }
 

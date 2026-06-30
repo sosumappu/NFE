@@ -11,7 +11,7 @@ use nfe_runtime::{
     config::RuntimeConfig,
     input_replay::McapSensorReplaySource,
     pipeline::EstimatorMode,
-    tuning::{config_from_vector, evaluate_episode_with_limit, search_space},
+    tuning::{evaluate_episode_with_limit, search_space},
 };
 use nfe_sim::{
     DynamicBicycle, IdentifiedModel, KinematicBicycle, SimulatorSource, VehicleModel, World,
@@ -23,7 +23,10 @@ use nfe_car::{
     replay::live_source::LiveSensorSource,
     sensors::factory::{SensorFactory, SensorReadySignals},
     state::{SensorStateWriter, SharedState},
-    tuning::{aggregate_sim_scores, evaluate_sim_laps, SimEpisodeScore, SimTuningObjective},
+};
+use nfe_tuner::{
+    aggregate_sim_scores, evaluate_sim_laps, load_runtime_config as load_tuning_runtime_config,
+    search_space_entries, Candidate, CandidateScore, SimEpisodeScore, SimTuningObjective,
 };
 
 struct Args {
@@ -45,6 +48,11 @@ struct Args {
     min_avg_speed_ms: f32,
     eval_seeds: usize,
     robustness_weight: f64,
+    candidate: Option<PathBuf>,
+    score_out: Option<PathBuf>,
+    dump_search_space: bool,
+    param_prefixes: Vec<String>,
+    out_explicit: bool,
 }
 
 impl Args {
@@ -54,6 +62,12 @@ impl Args {
             args.windows(2).find(|w| w[0] == flag).map(|w| w[1].clone())
         };
         let has = |flag: &str| args.iter().any(|a| a == flag);
+        let get_all = |flag: &str| -> Vec<String> {
+            args.windows(2)
+                .filter(|w| w[0] == flag)
+                .map(|w| w[1].clone())
+                .collect()
+        };
         Self {
             sim: get("--sim").or_else(|| get("--world")).map(Into::into),
             replay: get("--replay").map(Into::into),
@@ -89,6 +103,11 @@ impl Args {
             robustness_weight: get("--robustness-weight")
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(0.0),
+            candidate: get("--candidate").map(Into::into),
+            score_out: get("--score-out").map(Into::into),
+            dump_search_space: has("--dump-search-space"),
+            param_prefixes: get_all("--param-prefix"),
+            out_explicit: has("--out"),
         }
     }
 }
@@ -294,14 +313,46 @@ fn load_runtime_config(args: &Args) -> RuntimeConfig {
     let mut cfg = args
         .config
         .as_ref()
-        .and_then(|p| RuntimeConfig::from_toml_path(p).ok())
+        .and_then(|p| load_tuning_runtime_config(p).ok())
         .unwrap_or_default();
     cfg.mapping.enabled = false;
     cfg
 }
 
-fn vector_defaults(space: &[(String, ParamSpec)]) -> Vec<f64> {
-    space.iter().map(|(_, spec)| spec.default_value()).collect()
+fn filtered_search_space(prefixes: &[String]) -> Vec<(String, ParamSpec)> {
+    search_space()
+        .into_iter()
+        .filter(|(name, _)| prefixes.is_empty() || prefixes.iter().any(|p| name.starts_with(p)))
+        .collect()
+}
+
+fn vector_defaults(base: &RuntimeConfig, space: &[(String, ParamSpec)]) -> Vec<f64> {
+    space
+        .iter()
+        .map(|(key, spec)| runtime_config_value(base, key).unwrap_or_else(|| spec.default_value()))
+        .collect()
+}
+
+fn runtime_config_value(cfg: &RuntimeConfig, key: &str) -> Option<f64> {
+    let value = serde_json::to_value(cfg).ok()?;
+    let mut current = &value;
+    for part in key.split('.') {
+        current = current.get(part)?;
+    }
+    current.as_f64()
+}
+
+fn config_from_named_vector(
+    base: &RuntimeConfig,
+    space: &[(String, ParamSpec)],
+    vector: &[f64],
+) -> Result<RuntimeConfig> {
+    let params = space
+        .iter()
+        .zip(vector.iter().copied())
+        .map(|((key, _), value)| (key.clone(), value))
+        .collect();
+    Candidate { params }.apply_to_runtime_config(base)
 }
 
 fn print_progress<F>(
@@ -413,6 +464,96 @@ fn evaluate_sim_candidate(
     Ok(aggregate_sim_scores(&scores, robustness_weight))
 }
 
+fn write_search_space(args: &Args) -> Result<()> {
+    let entries = search_space_entries(&args.param_prefixes);
+    let json = serde_json::to_string_pretty(&entries)?;
+    std::fs::write(&args.out, json)?;
+    eprintln!(
+        "car-tune: wrote {} search-space entries to {}",
+        entries.len(),
+        args.out.display()
+    );
+    Ok(())
+}
+
+fn run_candidate_evaluation(
+    args: &Args,
+    mode: &TuneMode,
+    base_cfg: &RuntimeConfig,
+    max_ticks: usize,
+    sim_objective: &SimTuningObjective,
+) -> Result<()> {
+    let path = args
+        .candidate
+        .as_ref()
+        .context("--candidate requires a candidate JSON path")?;
+    let body = std::fs::read_to_string(path)
+        .with_context(|| format!("cannot read candidate: {}", path.display()))?;
+    let candidate: Candidate = serde_json::from_str(&body)
+        .with_context(|| format!("cannot parse candidate: {}", path.display()))?;
+    let cfg = candidate.apply_to_runtime_config(base_cfg)?;
+    if args.score_out.is_none() && !args.out_explicit {
+        anyhow::bail!("--candidate requires --score-out or an explicit --out");
+    }
+
+    let mut sim_crashed = false;
+    let candidate_score = match mode {
+        TuneMode::Sim {
+            world,
+            model,
+            model_params,
+            seed,
+            sim_config,
+            ..
+        } => {
+            let seeds = sim_eval_seeds(*seed, args.eval_seeds.max(1));
+            let score = evaluate_sim_candidate(
+                cfg.clone(),
+                world,
+                model,
+                model_params.as_ref(),
+                sim_config,
+                &seeds,
+                sim_objective,
+                args.robustness_weight,
+            )?;
+            sim_crashed = score.crashed;
+            CandidateScore::from(score)
+        }
+        TuneMode::Replay { .. } | TuneMode::Live { .. } => {
+            let mut source = mode.source()?;
+            let cost = evaluate_episode_with_limit(
+                cfg.clone(),
+                EstimatorMode::DeadReckon,
+                source.as_mut(),
+                Some(max_ticks),
+            )?;
+            CandidateScore {
+                lap_time_s: 0.0,
+                off_track_count: 0,
+                score: if cost.ticks > 0 {
+                    cost.cost as f64
+                } else {
+                    1.0e9
+                },
+            }
+        }
+    };
+
+    if let Some(path) = &args.score_out {
+        let json = serde_json::to_string_pretty(&candidate_score)?;
+        std::fs::write(path, json)?;
+    }
+    if args.out_explicit && !args.dump_search_space {
+        let json = serde_json::to_string_pretty(&cfg)?;
+        std::fs::write(&args.out, json)?;
+    }
+    if sim_crashed {
+        anyhow::bail!("candidate crashed in sim");
+    }
+    Ok(())
+}
+
 fn audit_search_space(space: &[(String, ParamSpec)]) {
     let integers = space
         .iter()
@@ -437,6 +578,10 @@ fn audit_search_space(space: &[(String, ParamSpec)]) {
 
 fn main() -> Result<()> {
     let args = Args::parse();
+    if args.dump_search_space {
+        return write_search_space(&args);
+    }
+
     let base_cfg = load_runtime_config(&args);
     let max_ticks = (args.episode_s / base_cfg.dt_s()).max(1.0) as usize;
     let mode = build_mode(&args, &base_cfg)?;
@@ -445,9 +590,23 @@ fn main() -> Result<()> {
             anyhow::bail!("car-tune sim lap tuning requires at least two world.waypoints entries");
         }
     }
-    let space = search_space();
+    let sim_objective = SimTuningObjective {
+        target_laps: args.target_laps.max(1),
+        target_speed_ms: args.target_speed_ms.max(0.1),
+        min_avg_speed_ms: args.min_avg_speed_ms.max(0.1),
+        max_ticks,
+        dt_s: base_cfg.dt_s(),
+    };
+    if args.candidate.is_some() {
+        return run_candidate_evaluation(&args, &mode, &base_cfg, max_ticks, &sim_objective);
+    }
+
+    let space = filtered_search_space(&args.param_prefixes);
+    if space.is_empty() {
+        anyhow::bail!("car-tune search space is empty after --param-prefix filtering");
+    }
     audit_search_space(&space);
-    let x0 = vector_defaults(&space);
+    let x0 = vector_defaults(&base_cfg, &space);
 
     let parallel = if args.parallel && mode.supports_parallel() {
         true
@@ -473,20 +632,18 @@ fn main() -> Result<()> {
 
     let objective_mode = mode.clone();
     let base_for_objective = base_cfg.clone();
-    let sim_objective = SimTuningObjective {
-        target_laps: args.target_laps.max(1),
-        target_speed_ms: args.target_speed_ms.max(0.1),
-        min_avg_speed_ms: args.min_avg_speed_ms.max(0.1),
-        max_ticks,
-        dt_s: base_cfg.dt_s(),
-    };
     let sim_best: Option<Arc<Mutex<Option<SimEpisodeScore>>>> =
         matches!(mode, TuneMode::Sim { .. }).then(|| Arc::new(Mutex::new(None)));
     let objective_sim_best = sim_best.clone();
     let eval_seeds = args.eval_seeds.max(1);
     let robustness_weight = args.robustness_weight;
+    let objective_space = space.clone();
     let objective = move |x: &cmaes::DVector<f64>| -> f64 {
-        let cfg = config_from_vector(&base_for_objective, x.as_slice());
+        let cfg =
+            match config_from_named_vector(&base_for_objective, &objective_space, x.as_slice()) {
+                Ok(cfg) => cfg,
+                Err(e) => return 1.0e9 + format!("{e:#}").len() as f64,
+            };
         match &objective_mode {
             TuneMode::Sim {
                 world,
@@ -547,7 +704,7 @@ fn main() -> Result<()> {
     let best = result
         .overall_best
         .expect("CMA-ES failed to find any valid solution");
-    let tuned = config_from_vector(&base_cfg, best.point.as_slice());
+    let tuned = config_from_named_vector(&base_cfg, &space, best.point.as_slice())?;
     let json = serde_json::to_string_pretty(&tuned)?;
     std::fs::write(&args.out, json)?;
     println!("car-tune: converged cost={:.4}", best.value);

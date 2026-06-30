@@ -37,7 +37,7 @@ pub struct ApexParams {
     #[param(0.01..2.0, default = 0.15)]
     pub min_range_jump_m: f32,
 
-    #[param(0.05..2.0, default = 0.05)]
+    #[param(0.01..2.0, default = 0.05)]
     pub max_opposite_dist_error_m: f32,
 
     #[tunable(skip)]
@@ -66,6 +66,9 @@ pub struct ApexParams {
 
     #[param(1.0..360.0, default = 90.0)]
     pub side_lookahead_center_deg: f32,
+
+    #[param(0.0..1.0, default = 0.75)]
+    pub apex_lookahead_weight: f32,
 }
 
 impl Default for ApexParams {
@@ -85,6 +88,7 @@ impl Default for ApexParams {
             lookahead_sensitivity: 5.0,
             side_lookahead_fov_deg: 60.0,
             side_lookahead_center_deg: 90.0,
+            apex_lookahead_weight: 0.75,
         }
     }
 }
@@ -163,7 +167,7 @@ impl ApexPerception for ApexCorridorPerception {
             let confidence = self.tracker.hold_confidence(confidence.confidence);
             return self
                 .tracker
-                .previous_estimate_with_confidence(cloud, confidence);
+                .held_estimate_with_confidence(cloud, confidence, timestamp_us);
         }
 
         let breakpoint = *discontinuity.breakpoint;
@@ -201,6 +205,9 @@ impl ApexPerception for ApexCorridorPerception {
             lateral_error_m,
             lateral_rate_m_s,
             heading_error_rad: target.angle_rad,
+            target_x_m: target.x,
+            target_y_m: target.y,
+            curvature_m_inv: target_curvature_m_inv(&target, &mut self.tracker),
             nearest_obstacle_m: nearest_front_obstacle_m(cloud),
             confidence: confidence.confidence,
         };
@@ -217,6 +224,20 @@ impl ApexPerception for ApexCorridorPerception {
     }
 }
 
+fn target_curvature_m_inv(
+    target: &nfe_core::sensors::LidarPoint,
+    tracker: &mut ApexTracker,
+) -> f32 {
+    let l2 = target.x * target.x + target.y * target.y;
+    if target.x <= 0.05 || l2 <= 1.0e-4 || !l2.is_finite() {
+        return tracker.last_curvature_m_inv();
+    }
+
+    let curvature_m_inv = 2.0 * target.y / l2;
+    tracker.remember_curvature_m_inv(curvature_m_inv);
+    curvature_m_inv
+}
+
 impl ApexCorridorPerception {
     fn opposite_params(&self) -> OppositeParams {
         OppositeParams {
@@ -227,6 +248,18 @@ impl ApexCorridorPerception {
     }
 
     fn calculate_dynamic_lookahead(&self, cloud: &LidarCloud) -> f32 {
+        let side_lookahead_m = self.side_diff_lookahead_m(cloud);
+        let Some(apex_angle_rad) = self.tracker.tracked_apex_angle_rad() else {
+            return side_lookahead_m;
+        };
+
+        let apex_lookahead_m = self.angle_lookahead_m(apex_angle_rad);
+        let apex_weight = self.params.apex_lookahead_weight.clamp(0.0, 1.0);
+        (apex_weight * apex_lookahead_m + (1.0 - apex_weight) * side_lookahead_m)
+            .clamp(self.params.min_lookahead_m, self.params.max_lookahead_m)
+    }
+
+    fn side_diff_lookahead_m(&self, cloud: &LidarCloud) -> f32 {
         let fov = self.params.side_lookahead_fov_deg.to_radians();
         let center = self.params.side_lookahead_center_deg.to_radians();
 
@@ -234,7 +267,15 @@ impl ApexCorridorPerception {
         let dist = |angle| cloud.nearest_in_arc(angle, fov).map_or(0.5, |p| p.dist_m);
         let side_diff = (dist(center) - dist(-center)).abs();
 
-        (self.params.max_lookahead_m - side_diff * self.params.lookahead_sensitivity)
+        self.lookahead_from_signal(side_diff)
+    }
+
+    fn angle_lookahead_m(&self, apex_angle_rad: f32) -> f32 {
+        self.lookahead_from_signal(apex_angle_rad.abs())
+    }
+
+    fn lookahead_from_signal(&self, signal: f32) -> f32 {
+        (self.params.max_lookahead_m - signal * self.params.lookahead_sensitivity)
             .clamp(self.params.min_lookahead_m, self.params.max_lookahead_m)
     }
 }
@@ -272,6 +313,51 @@ mod tests {
             points,
             timestamp_us: 0,
         }
+    }
+
+    #[test]
+    fn target_curvature_falls_back_to_last_valid_value_near_apex() {
+        let mut tracker = ApexTracker::default();
+        let target = LidarPoint {
+            x: 1.0,
+            y: 0.5,
+            dist_m: 1.0_f32.hypot(0.5),
+            angle_rad: 0.5_f32.atan2(1.0),
+            timestamp_us: 0,
+        };
+        let curvature = target_curvature_m_inv(&target, &mut tracker);
+        let near_apex = LidarPoint {
+            x: 0.01,
+            y: 0.5,
+            dist_m: 0.01_f32.hypot(0.5),
+            angle_rad: 0.5_f32.atan2(0.01),
+            timestamp_us: 0,
+        };
+
+        assert!(curvature.abs() > 0.0);
+        assert_eq!(target_curvature_m_inv(&near_apex, &mut tracker), curvature);
+    }
+
+    #[test]
+    fn tracked_apex_angle_reduces_lookahead_before_side_diff_changes() {
+        let params = ApexParams {
+            max_lookahead_m: 8.0,
+            min_lookahead_m: 0.5,
+            lookahead_sensitivity: 4.0,
+            apex_lookahead_weight: 1.0,
+            ..Default::default()
+        };
+        let mut perception = ApexCorridorPerception::new(params);
+        let scan = cloud(Vec::new());
+        let side_only = perception.calculate_dynamic_lookahead(&scan);
+
+        perception.tracker.remember_apex(1.0, 1.0);
+        let with_apex = perception.calculate_dynamic_lookahead(&scan);
+
+        assert!(
+            with_apex < side_only,
+            "side_only={side_only} with_apex={with_apex}"
+        );
     }
 
     #[test]

@@ -142,12 +142,15 @@
             pkg-config
             protobuf
             mcap-cli
+            uv
           ]
           ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
             rt-tests
           ];
 
         shellHook = ''
+          alias nfe-tune-apex='mkdir -p runs/tuning && uv run --project tools nfe-tune-optuna --car-tune target/release/car-tune --sim worlds/tracks/minispa.json --config packages/nfe-car/nfe.toml --trials 500 --out runs/tuning/optuna-best-runtime-config.json'
+
           echo ""
           echo "  NeverFastEnough dev shell"
           echo "  ─────────────────────────────────────────────────────────────────"
@@ -172,6 +175,7 @@
           echo ""
           echo "  On Dev Machine"
           echo "    cargo run --bin car-monitor -- --pi nfe.local     live dashboard"
+          echo "    nfe-tune-apex                                    run Optuna apex tuning from repo root"
           echo "    cargo run --release -- --replay sessions/s.bin    replay session"
           echo "    cargo run --release -- --replay sessions/s.bin --fast  fast replay"
           echo "    scp localhost@nfe.local:/tmp/s.bin sessions/      copy session file"

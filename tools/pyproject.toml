@@ -1,3 +1,7 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "nfe-tools"
 version = "0.1.0"
@@ -6,6 +10,14 @@ requires-python = ">=3.13"
 dependencies = [
     "numpy>=2.4.6",
     "opencv-python>=4.13.0.92",
+    "optuna>=4.9.0",
     "pandas>=3.0.3",
+    "rich>=15.0.0",
     "scipy>=1.17.1",
 ]
+
+[project.scripts]
+nfe-tune-optuna = "nfe_tools.optuna_tuner:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/nfe_tools"]

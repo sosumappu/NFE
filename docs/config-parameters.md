@@ -71,6 +71,7 @@ This table documents the TOML parameters loaded by `packages/nfe-car/src/config.
 | `control.perception.apex.lookahead_sensitivity` | `5.0` | Scaling between observed geometry and chosen lookahead distance. | Tune in sim/replay for smooth corner entry. Increase for farther lookahead at confidence; decrease if the car cuts corners or reacts late. |
 | `control.perception.apex.side_lookahead_fov_deg` | `80.0` | Width of the side field-of-view window used for lookahead cues. | Set from LiDAR mounting and wall visibility. Narrow to reject rear/side clutter; widen when side walls are frequently missed. |
 | `control.perception.apex.side_lookahead_center_deg` | `90.0` | Center angle of the side lookahead window, in degrees from forward. | Start near `90` for direct side returns. Shift if LiDAR mounting or body occlusion makes a different side sector more reliable. |
+| `control.perception.apex.apex_lookahead_weight` | `0.75` | Blend weight for apex-angle-based lookahead versus side-distance-difference lookahead when an apex is tracked. | Increase toward `1.0` if lookahead should shorten earlier from the tracked apex angle; decrease if side distance cues are more reliable on the track. |
 
 ## Live hardware
 

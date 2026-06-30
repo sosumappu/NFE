@@ -10,6 +10,7 @@ pub(super) struct ApexTracker {
     prev_apex_angle_rad: Option<f32>,
     prev_apex_score: Option<f32>,
     prev_corridor_estimate: Option<CorridorEstimate>,
+    last_curvature_m_inv: f32,
 }
 
 impl ApexTracker {
@@ -17,6 +18,7 @@ impl ApexTracker {
         self.prev_lateral_error_m = None;
         self.clear_apex_hysteresis();
         self.prev_corridor_estimate = None;
+        self.last_curvature_m_inv = 0.0;
     }
 
     pub(super) fn clear_apex_hysteresis(&mut self) {
@@ -44,10 +46,14 @@ impl ApexTracker {
     }
 
     pub(super) fn insufficient_points_estimate(&self, cloud: &LidarCloud) -> CorridorEstimate {
+        let lateral_error_m = self.prev_lateral_error_m.map(|(err, _)| err).unwrap_or(0.0);
         CorridorEstimate {
-            lateral_error_m: self.prev_lateral_error_m.map(|(err, _)| err).unwrap_or(0.0),
+            lateral_error_m,
             lateral_rate_m_s: 0.0,
             heading_error_rad: 0.0,
+            target_x_m: 0.0,
+            target_y_m: lateral_error_m,
+            curvature_m_inv: 0.0,
             nearest_obstacle_m: nearest_obstacle_m(cloud),
             confidence: 0.0,
         }
@@ -64,18 +70,33 @@ impl ApexTracker {
         cloud: &LidarCloud,
         confidence: f32,
     ) -> CorridorEstimate {
-        let mut estimate =
-            self.prev_corridor_estimate
-                .clone()
-                .unwrap_or_else(|| CorridorEstimate {
-                    lateral_error_m: self.prev_lateral_error_m.map(|(err, _)| err).unwrap_or(0.0),
-                    lateral_rate_m_s: 0.0,
-                    heading_error_rad: 0.0,
-                    nearest_obstacle_m: nearest_front_obstacle_m(cloud),
-                    confidence,
-                });
+        let mut estimate = self.prev_corridor_estimate.clone().unwrap_or_else(|| {
+            let lateral_error_m = self.prev_lateral_error_m.map(|(err, _)| err).unwrap_or(0.0);
+            CorridorEstimate {
+                lateral_error_m,
+                lateral_rate_m_s: 0.0,
+                heading_error_rad: 0.0,
+                target_x_m: 0.0,
+                target_y_m: lateral_error_m,
+                curvature_m_inv: self.last_curvature_m_inv,
+                nearest_obstacle_m: nearest_front_obstacle_m(cloud),
+                confidence,
+            }
+        });
         estimate.nearest_obstacle_m = nearest_front_obstacle_m(cloud);
         estimate.confidence = confidence;
+        estimate
+    }
+
+    pub(super) fn held_estimate_with_confidence(
+        &mut self,
+        cloud: &LidarCloud,
+        confidence: f32,
+        timestamp_us: u64,
+    ) -> CorridorEstimate {
+        let mut estimate = self.previous_estimate_with_confidence(cloud, confidence);
+        estimate.lateral_rate_m_s = self.lateral_rate_m_s(estimate.lateral_error_m, timestamp_us);
+        self.remember_estimate(estimate.clone());
         estimate
     }
 
@@ -105,6 +126,20 @@ impl ApexTracker {
         self.prev_apex_score = Some(score);
     }
 
+    pub(super) fn tracked_apex_angle_rad(&self) -> Option<f32> {
+        self.prev_apex_angle_rad
+    }
+
+    pub(super) fn remember_curvature_m_inv(&mut self, curvature_m_inv: f32) {
+        if curvature_m_inv.is_finite() && curvature_m_inv.abs() > f32::EPSILON {
+            self.last_curvature_m_inv = curvature_m_inv;
+        }
+    }
+
+    pub(super) fn last_curvature_m_inv(&self) -> f32 {
+        self.last_curvature_m_inv
+    }
+
     pub(super) fn remember_estimate(&mut self, estimate: CorridorEstimate) {
         self.prev_corridor_estimate = Some(estimate);
     }
@@ -126,5 +161,22 @@ mod tests {
         assert!(tracker.should_hold_previous_apex(0.1, 1.2, 0.35, 1.8));
         assert!(!tracker.should_hold_previous_apex(0.1, 2.0, 0.35, 1.8));
         assert!(!tracker.should_hold_previous_apex(0.5, 1.0, 0.35, 1.8));
+    }
+
+    #[test]
+    fn held_estimate_recomputes_lateral_rate_for_current_timestamp() {
+        let mut tracker = ApexTracker::default();
+        tracker.lateral_rate_m_s(0.4, 1_000_000);
+        tracker.remember_estimate(CorridorEstimate {
+            lateral_error_m: 0.4,
+            lateral_rate_m_s: 42.0,
+            confidence: 0.8,
+            ..Default::default()
+        });
+
+        let held = tracker.held_estimate_with_confidence(&LidarCloud::default(), 0.7, 1_100_000);
+
+        assert_eq!(held.lateral_rate_m_s, 0.0);
+        assert_eq!(held.confidence, 0.7);
     }
 }

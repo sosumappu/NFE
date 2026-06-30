@@ -16,6 +16,9 @@ pub struct TickMetrics {
     pub loop_us: u32,
     pub lateral_error_m: f32,
     pub heading_error_rad: f32,
+    pub target_x_m: f32,
+    pub target_y_m: f32,
+    pub curvature_m_inv: f32,
     pub steering_rad: f32,
     pub throttle: f32,
     pub target_speed_ms: f32,
@@ -152,18 +155,22 @@ impl MetricsLog {
         writeln!(
             w,
             "tick,timestamp_us,loop_us,lateral_error_m,heading_error_rad,\
+                     target_x_m,target_y_m,curvature_m_inv,\
                      steering_rad,throttle,target_speed_ms,current_speed_ms,\
                      nearest_obstacle_m,gz_rad_s,vy_ms,estop,watchdog_miss,sensor_fault"
         )?;
         for m in self.iter() {
             writeln!(
                 w,
-                "{},{},{},{:.4},{:.4},{:.4},{:.4},{:.3},{:.3},{:.3},{:.4},{:.4},{},{},{}",
+                "{},{},{},{:.4},{:.4},{:.3},{:.3},{:.4},{:.4},{:.4},{:.3},{:.3},{:.3},{:.4},{:.4},{},{},{}",
                 m.tick,
                 m.timestamp_us,
                 m.loop_us,
                 m.lateral_error_m,
                 m.heading_error_rad,
+                m.target_x_m,
+                m.target_y_m,
+                m.curvature_m_inv,
                 m.steering_rad,
                 m.throttle,
                 m.target_speed_ms,

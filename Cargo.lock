@@ -1020,6 +1020,7 @@ dependencies = [
  "nfe-core",
  "nfe-runtime",
  "nfe-sim",
+ "nfe-tuner",
  "parking_lot",
  "rppal",
  "serde",
@@ -1081,6 +1082,19 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "nfe-tuner"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "nfe-core",
+ "nfe-runtime",
+ "nfe-sim",
+ "serde",
+ "serde_json",
+ "toml",
 ]
 
 [[package]]

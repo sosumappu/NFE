@@ -35,6 +35,7 @@ impl ReactiveController {
 impl Controller for ReactiveController {
     fn reset(&mut self) {
         self.pid.reset();
+        self.speed.reset();
     }
 
     fn compute(&mut self, input: &ControlInput<'_>) -> ControlOutput {
@@ -51,7 +52,7 @@ impl Controller for ReactiveController {
             heading_error_rad: corridor.heading_error_rad,
             yaw_rate_rad_s: input.motion.yaw_rate_rad_s,
         });
-        let target_speed = self.speed.compute(Some(corridor));
+        let target_speed = self.speed.compute(Some(corridor), input.dt_s);
         let throttle = self
             .pid
             .compute(target_speed - input.motion.speed_ms, input.dt_s);

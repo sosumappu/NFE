@@ -14,6 +14,15 @@ pub struct CorridorEstimate {
     pub lateral_error_m: f32,
     pub lateral_rate_m_s: f32,
     pub heading_error_rad: f32,
+    /// Local-frame reactive target point used by point-based planners.
+    #[serde(default)]
+    pub target_x_m: f32,
+    /// Local-frame reactive target point used by point-based planners.
+    #[serde(default)]
+    pub target_y_m: f32,
+    /// Signed curvature of the arc from the car to the reactive target [1/m].
+    #[serde(default)]
+    pub curvature_m_inv: f32,
     pub nearest_obstacle_m: f32,
     /// Perception confidence in [0,1].
     pub confidence: f32,
