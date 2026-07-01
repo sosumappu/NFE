@@ -49,6 +49,20 @@ pub fn runtime_config_from_car_config(config: &impl Serialize) -> Result<Runtime
     Ok(runtime_config_from_car_compat(&car))
 }
 
+pub fn validate_runtime_config(config: &RuntimeConfig) -> Vec<String> {
+    let mut errors = Vec::new();
+    let apex = &config.algo.apex;
+    if !apex.min_lookahead_m.is_finite() || !apex.max_lookahead_m.is_finite() {
+        errors.push("algo.apex lookahead bounds must be finite".to_string());
+    } else if apex.min_lookahead_m > apex.max_lookahead_m {
+        errors.push(format!(
+            "algo.apex.min_lookahead_m ({}) must be <= algo.apex.max_lookahead_m ({})",
+            apex.min_lookahead_m, apex.max_lookahead_m
+        ));
+    }
+    errors
+}
+
 fn param_value(spec: ParamSpec, raw: f64) -> Result<Value> {
     let clamped = spec.clamp(raw);
     match spec {
@@ -354,6 +368,18 @@ mod tests {
         assert_eq!(tuned.algo.apex.min_range_jump_m, 0.2);
         assert_eq!(tuned.algo.apex.median_window, 5);
         assert!(!tuned.algo.apex.prefer_nearer_opposite);
+    }
+
+    #[test]
+    fn validation_rejects_inverted_apex_lookahead_bounds() {
+        let mut config = RuntimeConfig::default();
+        config.algo.apex.min_lookahead_m = 4.5;
+        config.algo.apex.max_lookahead_m = 2.8;
+
+        let errors = validate_runtime_config(&config);
+
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("min_lookahead_m"));
     }
 
     #[test]

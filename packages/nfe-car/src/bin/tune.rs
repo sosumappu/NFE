@@ -26,7 +26,8 @@ use nfe_car::{
 };
 use nfe_tuner::{
     aggregate_sim_scores, evaluate_sim_laps, load_runtime_config as load_tuning_runtime_config,
-    search_space_entries, Candidate, CandidateScore, SimEpisodeScore, SimTuningObjective,
+    search_space_entries_for_config, validate_runtime_config, Candidate, CandidateScore,
+    SimEpisodeScore, SimTuningObjective,
 };
 
 struct Args {
@@ -465,7 +466,8 @@ fn evaluate_sim_candidate(
 }
 
 fn write_search_space(args: &Args) -> Result<()> {
-    let entries = search_space_entries(&args.param_prefixes);
+    let base_cfg = load_runtime_config(args);
+    let entries = search_space_entries_for_config(&args.param_prefixes, &base_cfg);
     let json = serde_json::to_string_pretty(&entries)?;
     std::fs::write(&args.out, json)?;
     eprintln!(
@@ -496,46 +498,54 @@ fn run_candidate_evaluation(
         anyhow::bail!("--candidate requires --score-out or an explicit --out");
     }
 
-    let mut sim_crashed = false;
-    let candidate_score = match mode {
-        TuneMode::Sim {
-            world,
-            model,
-            model_params,
-            seed,
-            sim_config,
-            ..
-        } => {
-            let seeds = sim_eval_seeds(*seed, args.eval_seeds.max(1));
-            let score = evaluate_sim_candidate(
-                cfg.clone(),
+    let validation_errors = validate_runtime_config(&cfg);
+    let candidate_score = if validation_errors.is_empty() {
+        None
+    } else {
+        Some(CandidateScore::invalid(validation_errors.join("; ")))
+    };
+    let candidate_score = if let Some(candidate_score) = candidate_score {
+        candidate_score
+    } else {
+        match mode {
+            TuneMode::Sim {
                 world,
                 model,
-                model_params.as_ref(),
+                model_params,
+                seed,
                 sim_config,
-                &seeds,
-                sim_objective,
-                args.robustness_weight,
-            )?;
-            sim_crashed = score.crashed;
-            CandidateScore::from(score)
-        }
-        TuneMode::Replay { .. } | TuneMode::Live { .. } => {
-            let mut source = mode.source()?;
-            let cost = evaluate_episode_with_limit(
-                cfg.clone(),
-                EstimatorMode::DeadReckon,
-                source.as_mut(),
-                Some(max_ticks),
-            )?;
-            CandidateScore {
-                lap_time_s: 0.0,
-                off_track_count: 0,
-                score: if cost.ticks > 0 {
-                    cost.cost as f64
-                } else {
-                    1.0e9
-                },
+                ..
+            } => {
+                let seeds = sim_eval_seeds(*seed, args.eval_seeds.max(1));
+                let score = evaluate_sim_candidate(
+                    cfg.clone(),
+                    world,
+                    model,
+                    model_params.as_ref(),
+                    sim_config,
+                    &seeds,
+                    sim_objective,
+                    args.robustness_weight,
+                )?;
+                CandidateScore::from(score)
+            }
+            TuneMode::Replay { .. } | TuneMode::Live { .. } => {
+                let mut source = mode.source()?;
+                let cost = evaluate_episode_with_limit(
+                    cfg.clone(),
+                    EstimatorMode::DeadReckon,
+                    source.as_mut(),
+                    Some(max_ticks),
+                )?;
+                CandidateScore::replay(
+                    if cost.ticks > 0 {
+                        cost.cost as f64
+                    } else {
+                        1.0e9
+                    },
+                    cost.ticks,
+                    None,
+                )
             }
         }
     };
@@ -547,9 +557,6 @@ fn run_candidate_evaluation(
     if args.out_explicit && !args.dump_search_space {
         let json = serde_json::to_string_pretty(&cfg)?;
         std::fs::write(&args.out, json)?;
-    }
-    if sim_crashed {
-        anyhow::bail!("candidate crashed in sim");
     }
     Ok(())
 }
@@ -644,6 +651,10 @@ fn main() -> Result<()> {
                 Ok(cfg) => cfg,
                 Err(e) => return 1.0e9 + format!("{e:#}").len() as f64,
             };
+        let validation_errors = validate_runtime_config(&cfg);
+        if !validation_errors.is_empty() {
+            return 1.0e9 + validation_errors.iter().map(String::len).sum::<usize>() as f64;
+        }
         match &objective_mode {
             TuneMode::Sim {
                 world,

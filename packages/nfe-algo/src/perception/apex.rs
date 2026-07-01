@@ -255,8 +255,9 @@ impl ApexCorridorPerception {
 
         let apex_lookahead_m = self.angle_lookahead_m(apex_angle_rad);
         let apex_weight = self.params.apex_lookahead_weight.clamp(0.0, 1.0);
+        let (min_lookahead_m, max_lookahead_m) = self.lookahead_bounds();
         (apex_weight * apex_lookahead_m + (1.0 - apex_weight) * side_lookahead_m)
-            .clamp(self.params.min_lookahead_m, self.params.max_lookahead_m)
+            .clamp(min_lookahead_m, max_lookahead_m)
     }
 
     fn side_diff_lookahead_m(&self, cloud: &LidarCloud) -> f32 {
@@ -275,8 +276,23 @@ impl ApexCorridorPerception {
     }
 
     fn lookahead_from_signal(&self, signal: f32) -> f32 {
-        (self.params.max_lookahead_m - signal * self.params.lookahead_sensitivity)
-            .clamp(self.params.min_lookahead_m, self.params.max_lookahead_m)
+        let (min_lookahead_m, max_lookahead_m) = self.lookahead_bounds();
+        (max_lookahead_m - signal * self.params.lookahead_sensitivity)
+            .clamp(min_lookahead_m, max_lookahead_m)
+    }
+
+    fn lookahead_bounds(&self) -> (f32, f32) {
+        let min = finite_or(self.params.min_lookahead_m, 0.5).max(0.0);
+        let max = finite_or(self.params.max_lookahead_m, 8.0).max(0.0);
+        (min.min(max), min.max(max))
+    }
+}
+
+fn finite_or(value: f32, fallback: f32) -> f32 {
+    if value.is_finite() {
+        value
+    } else {
+        fallback
     }
 }
 
@@ -358,6 +374,19 @@ mod tests {
             with_apex < side_only,
             "side_only={side_only} with_apex={with_apex}"
         );
+    }
+
+    #[test]
+    fn lookahead_bounds_are_panic_safe_when_candidate_inverts_min_max() {
+        let perception = ApexCorridorPerception::new(ApexParams {
+            min_lookahead_m: 4.5,
+            max_lookahead_m: 2.8,
+            ..Default::default()
+        });
+
+        let lookahead = perception.angle_lookahead_m(1.0);
+
+        assert!((2.8..=4.5).contains(&lookahead));
     }
 
     #[test]

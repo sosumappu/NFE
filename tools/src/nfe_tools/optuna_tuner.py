@@ -33,6 +33,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sim-seed", type=int)
     parser.add_argument("--model", default="kinematic")
     parser.add_argument("--model-params")
+    parser.add_argument("--trial-dir", help="Persist per-trial candidate, score, stdout, and stderr files")
     args = parser.parse_args()
     if args.param_prefix is None:
         args.param_prefix = ["algo.apex"]
@@ -74,6 +75,8 @@ def run_checked(cmd: list[str]) -> subprocess.CompletedProcess[str]:
 def load_search_space(args: argparse.Namespace) -> list[dict[str, Any]]:
     with tempfile.NamedTemporaryFile(suffix=".json") as tmp:
         cmd = [args.car_tune, "--dump-search-space", "--out", tmp.name]
+        if args.config:
+            cmd += ["--config", args.config]
         for prefix in args.param_prefix:
             cmd += ["--param-prefix", prefix]
         run_checked(cmd)
@@ -99,28 +102,48 @@ def evaluate_candidate(
     params: dict[str, float | int],
     *,
     output_config: Path | None = None,
+    trial_number: int | None = None,
 ) -> dict[str, Any]:
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmp = Path(tmpdir)
-        candidate_path = tmp / "candidate.json"
-        score_path = tmp / "score.json"
-        write_candidate(candidate_path, params)
-        cmd = [
-            args.car_tune,
-            "--candidate",
-            str(candidate_path),
-            "--score-out",
-            str(score_path),
-        ] + base_car_tune_args(args)
-        if output_config is not None:
-            output_config.parent.mkdir(parents=True, exist_ok=True)
-            cmd += ["--out", str(output_config)]
+    if args.trial_dir and trial_number is not None:
+        trial_dir = Path(args.trial_dir) / f"trial_{trial_number:06d}"
+        trial_dir.mkdir(parents=True, exist_ok=True)
+        return evaluate_candidate_in_dir(args, params, trial_dir, output_config=output_config)
 
-        completed = subprocess.run(cmd, text=True, capture_output=True)
-        if completed.returncode != 0:
-            message = completed.stderr.strip() or completed.stdout.strip()
-            raise optuna.TrialPruned(message or "car-tune candidate evaluation failed")
-        return json.loads(score_path.read_text())
+    with tempfile.TemporaryDirectory() as tmpdir:
+        return evaluate_candidate_in_dir(args, params, Path(tmpdir), output_config=output_config)
+
+
+def evaluate_candidate_in_dir(
+    args: argparse.Namespace,
+    params: dict[str, float | int],
+    work_dir: Path,
+    *,
+    output_config: Path | None = None,
+) -> dict[str, Any]:
+    candidate_path = work_dir / "candidate.json"
+    score_path = work_dir / "score.json"
+    stdout_path = work_dir / "stdout.log"
+    stderr_path = work_dir / "stderr.log"
+    write_candidate(candidate_path, params)
+    cmd = [
+        args.car_tune,
+        "--candidate",
+        str(candidate_path),
+        "--score-out",
+        str(score_path),
+    ] + base_car_tune_args(args)
+    if output_config is not None:
+        output_config.parent.mkdir(parents=True, exist_ok=True)
+        cmd += ["--out", str(output_config)]
+
+    completed = subprocess.run(cmd, text=True, capture_output=True)
+    stdout_path.write_text(completed.stdout)
+    stderr_path.write_text(completed.stderr)
+    if completed.returncode != 0:
+        message = completed.stderr.strip() or completed.stdout.strip()
+        console.print(f"[red]car-tune failed[/red]: {message}")
+        raise optuna.TrialPruned(message or "car-tune candidate evaluation failed")
+    return json.loads(score_path.read_text())
 
 
 def main() -> None:
@@ -132,10 +155,7 @@ def main() -> None:
     console.print(f"Loaded {len(space)} parameters from car-tune")
     sampler = optuna.samplers.TPESampler(
         seed=args.seed,
-        multivariate=True,
-        group=True,
         n_startup_trials=min(30, max(1, args.trials // 10)),
-        constant_liar=True,
     )
     study = optuna.create_study(
         direction="minimize",
@@ -144,6 +164,14 @@ def main() -> None:
         study_name=args.study,
         load_if_exists=True,
     )
+
+    if not study.trials:
+        baseline_params = {
+            entry["name"]: entry.get("current", entry.get("default"))
+            for entry in space
+            if entry.get("current", entry.get("default")) is not None
+        }
+        study.enqueue_trial(baseline_params, user_attrs={"seeded_baseline": True})
 
     def objective(trial: optuna.Trial) -> float:
         params = {entry["name"]: suggest_value(trial, entry) for entry in space}
@@ -156,9 +184,21 @@ def main() -> None:
                 * float(params["algo.apex.apex_switch_hysteresis_factor"])
             )
             trial.set_user_attr("apex_stability_product", stability_product)
-        score = evaluate_candidate(args, params)
+        score = evaluate_candidate(args, params, trial_number=trial.number)
         for key, value in score.items():
             trial.set_user_attr(key, value)
+        console.print(
+            "trial={trial} status={status} score={score:.3f} progress={progress:.1%} "
+            "laps={laps} crashed={crashed} avg={avg:.2f}m/s".format(
+                trial=trial.number,
+                status=score.get("status", "unknown"),
+                score=float(score["score"]),
+                progress=float(score.get("progress_ratio", 0.0)),
+                laps=score.get("completed_laps", 0),
+                crashed=score.get("crashed", False),
+                avg=float(score.get("avg_speed_ms", 0.0)),
+            )
+        )
         return float(score["score"])
 
     study.optimize(objective, n_trials=args.trials)
