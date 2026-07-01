@@ -149,7 +149,7 @@
           ];
 
         shellHook = ''
-          alias nfe-tune-apex='mkdir -p runs/tuning && uv run --project tools nfe-tune-optuna --car-tune target/release/car-tune --sim worlds/tracks/minispa.json --config packages/nfe-car/nfe.toml --trials 500 --out runs/tuning/optuna-best-runtime-config.json'
+          alias nfe-tune-apex='mkdir -p runs/tuning && uv run --project tools nfe-tune-optuna --car-tune target/debug/car-tune --sim worlds/tracks/minispa.json --config packages/nfe-car/nfe.toml --trials 500 --out runs/tuning/optuna-best-runtime-config.json'
 
           echo ""
           echo "  NeverFastEnough dev shell"

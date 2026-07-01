@@ -368,10 +368,10 @@ Optuna TPE tuning via the UV-managed tools project:
 
 ```bash
 cd tools
-uv run nfe-tune-optuna --car-tune ../target/release/car-tune --sim ../worlds/tracks/minispa.json --config ../packages/nfe-car/nfe.toml --trials 500 --out ../runs/tuning/optuna-best-runtime-config.json
+uv run nfe-tune-optuna --car-tune ../target/debug/car-tune --sim ../worlds/tracks/minispa.json --config ../packages/nfe-car/nfe.toml --trials 500 --out ../runs/tuning/optuna-best-runtime-config.json
 ```
 
-Inside `nix develop`, the same default apex tuning run is available from the repository root:
+Inside `nix develop`, the same default apex tuning run is available from the repository root and uses the debug `target/debug/car-tune` binary:
 
 ```bash
 nfe-tune-apex
