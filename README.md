@@ -371,7 +371,7 @@ cd tools
 uv run nfe-tune-optuna --car-tune ../target/debug/car-tune --sim ../worlds/tracks/minispa.json --config ../packages/nfe-car/nfe.toml --trials 500 --storage sqlite:///../runs/tuning/nfe-optuna.db --trial-dir ../runs/tuning/trials --out ../runs/tuning/optuna-best-runtime-config.json
 ```
 
-Inside `nix develop`, the same default apex tuning run is available from the repository root and uses the debug `target/debug/car-tune` binary:
+Inside `nix develop` or a direnv shell using `use flake`, the same default apex tuning run is available from the repository root and uses the debug `target/debug/car-tune` binary:
 
 ```bash
 tune
@@ -381,7 +381,7 @@ Extra flags can be appended to override defaults, for example `tune --trials 50 
 
 The Optuna runner seeds trial 0 from the current `--config`, records rich score attributes (`status`, lap progress, RMS errors, speed, crash flag), and can persist per-trial `candidate.json`, `score.json`, `stdout.log`, and `stderr.log` files via `--trial-dir`. Sim crashes are completed trials with a high objective score instead of pruned infrastructure failures, so TPE can learn to avoid unsafe regions.
 
-Plot the Optuna study from the repository root:
+Plot the Optuna study from the repository root in the same dev shell or direnv environment:
 
 ```bash
 tuner-plot

@@ -128,6 +128,57 @@
     # ── Dev shell ──────────────────────────────────────────────────
     devShells = forSystems (system: let
       pkgs = pkgsFor system;
+      findRepoRoot = ''
+        find_repo_root() {
+          dir="$PWD"
+          while [ "$dir" != "/" ]; do
+            if [ -f "$dir/tools/pyproject.toml" ] && [ -f "$dir/packages/nfe-car/nfe.toml" ]; then
+              printf '%s\n' "$dir"
+              return 0
+            fi
+            dir="$(dirname "$dir")"
+          done
+          echo "nfe tuning: cannot find repository root" >&2
+          return 1
+        }
+      '';
+      tune = pkgs.writeShellApplication {
+        name = "tune";
+        runtimeInputs = [pkgs.coreutils pkgs.uv pkgs.rustToolchain];
+        text = ''
+          ${findRepoRoot}
+          root="$(find_repo_root)"
+          cd "$root"
+          mkdir -p runs/tuning
+          if [ ! -x target/debug/car-tune ]; then
+            cargo build -p nfe-car --bin car-tune
+          fi
+          exec uv run --project tools nfe-tune-optuna \
+            --car-tune target/debug/car-tune \
+            --sim worlds/tracks/minispa.json \
+            --config packages/nfe-car/nfe.toml \
+            --trials 500 \
+            --storage sqlite:///runs/tuning/nfe-optuna.db \
+            --trial-dir runs/tuning/trials \
+            --out runs/tuning/optuna-best-runtime-config.json \
+            "$@"
+        '';
+      };
+      tuner-plot = pkgs.writeShellApplication {
+        name = "tuner-plot";
+        runtimeInputs = [pkgs.coreutils pkgs.uv];
+        text = ''
+          ${findRepoRoot}
+          root="$(find_repo_root)"
+          cd "$root"
+          mkdir -p runs/tuning/plots
+          exec uv run --project tools nfe-plot-optuna \
+            --storage sqlite:///runs/tuning/nfe-optuna.db \
+            --study nfe-tpe \
+            --out-dir runs/tuning/plots \
+            "$@"
+        '';
+      };
     in {
       default = pkgs.mkShell {
         name = "nfe-car-dev";
@@ -143,15 +194,14 @@
             protobuf
             mcap-cli
             uv
+            tune
+            tuner-plot
           ]
           ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
             rt-tests
           ];
 
         shellHook = ''
-          alias tune='mkdir -p runs/tuning && uv run --project tools nfe-tune-optuna --car-tune target/debug/car-tune --sim worlds/tracks/minispa.json --config packages/nfe-car/nfe.toml --trials 500 --storage sqlite:///runs/tuning/nfe-optuna.db --trial-dir runs/tuning/trials --out runs/tuning/optuna-best-runtime-config.json'
-          alias tuner-plot='mkdir -p runs/tuning/plots && uv run --project tools nfe-plot-optuna --storage sqlite:///runs/tuning/nfe-optuna.db --study nfe-tpe --out-dir runs/tuning/plots'
-
           echo ""
           echo "  NeverFastEnough dev shell"
           echo "  ─────────────────────────────────────────────────────────────────"
