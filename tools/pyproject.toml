@@ -12,12 +12,14 @@ dependencies = [
     "opencv-python>=4.13.0.92",
     "optuna>=4.9.0",
     "pandas>=3.0.3",
+    "plotly>=6.8.0",
     "rich>=15.0.0",
     "scipy>=1.17.1",
 ]
 
 [project.scripts]
 nfe-tune-optuna = "nfe_tools.optuna_tuner:main"
+nfe-plot-optuna = "nfe_tools.optuna_plot:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/nfe_tools"]

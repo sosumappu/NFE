@@ -374,12 +374,20 @@ uv run nfe-tune-optuna --car-tune ../target/debug/car-tune --sim ../worlds/track
 Inside `nix develop`, the same default apex tuning run is available from the repository root and uses the debug `target/debug/car-tune` binary:
 
 ```bash
-nfe-tune-apex
+tune
 ```
 
-Extra flags can be appended to override defaults, for example `nfe-tune-apex --trials 50 --storage sqlite:///runs/tuning/apex-smoke.db`.
+Extra flags can be appended to override defaults, for example `tune --trials 50 --storage sqlite:///runs/tuning/apex-smoke.db`.
 
 The Optuna runner seeds trial 0 from the current `--config`, records rich score attributes (`status`, lap progress, RMS errors, speed, crash flag), and can persist per-trial `candidate.json`, `score.json`, `stdout.log`, and `stderr.log` files via `--trial-dir`. Sim crashes are completed trials with a high objective score instead of pruned infrastructure failures, so TPE can learn to avoid unsafe regions.
+
+Plot the Optuna study from the repository root:
+
+```bash
+tuner-plot
+```
+
+The plotting helper writes `trials.csv`, Optuna visualization HTML files, candidate metric plots, and status counts under `runs/tuning/plots`. Outside `nix develop`, the equivalent command is `uv run --project tools nfe-plot-optuna --storage sqlite:///runs/tuning/nfe-optuna.db --out-dir runs/tuning/plots`.
 
 Replay episode tuning:
 

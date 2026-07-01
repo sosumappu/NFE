@@ -149,7 +149,8 @@
           ];
 
         shellHook = ''
-          alias nfe-tune-apex='mkdir -p runs/tuning && uv run --project tools nfe-tune-optuna --car-tune target/debug/car-tune --sim worlds/tracks/minispa.json --config packages/nfe-car/nfe.toml --trials 500 --storage sqlite:///runs/tuning/nfe-optuna.db --trial-dir runs/tuning/trials --out runs/tuning/optuna-best-runtime-config.json'
+          alias tune='mkdir -p runs/tuning && uv run --project tools nfe-tune-optuna --car-tune target/debug/car-tune --sim worlds/tracks/minispa.json --config packages/nfe-car/nfe.toml --trials 500 --storage sqlite:///runs/tuning/nfe-optuna.db --trial-dir runs/tuning/trials --out runs/tuning/optuna-best-runtime-config.json'
+          alias tuner-plot='mkdir -p runs/tuning/plots && uv run --project tools nfe-plot-optuna --storage sqlite:///runs/tuning/nfe-optuna.db --study nfe-tpe --out-dir runs/tuning/plots'
 
           echo ""
           echo "  NeverFastEnough dev shell"
@@ -175,7 +176,8 @@
           echo ""
           echo "  On Dev Machine"
           echo "    cargo run --bin car-monitor -- --pi nfe.local     live dashboard"
-          echo "    nfe-tune-apex                                    run Optuna apex tuning from repo root"
+          echo "    tune                                             run Optuna apex tuning from repo root"
+          echo "    tuner-plot                                       plot Optuna tuning results"
           echo "    cargo run --release -- --replay sessions/s.bin    replay session"
           echo "    cargo run --release -- --replay sessions/s.bin --fast  fast replay"
           echo "    scp localhost@nfe.local:/tmp/s.bin sessions/      copy session file"
