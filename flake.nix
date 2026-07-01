@@ -155,7 +155,7 @@
           fi
           exec uv run --project tools nfe-tune-optuna \
             --car-tune target/debug/car-tune \
-            --sim worlds/tracks/minispa.json \
+            --sim worlds/tracks/awake1.json \
             --config packages/nfe-car/nfe.toml \
             --trials 500 \
             --storage sqlite:///runs/tuning/nfe-optuna.db \
