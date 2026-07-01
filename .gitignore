@@ -10,3 +10,5 @@ tools/.mypy_cache/
 runs/tuning/*.db
 runs/tuning/*.json
 runs/tuning/trials/
+runs/**/*.html
+.pi/

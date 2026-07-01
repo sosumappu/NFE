@@ -370,18 +370,7 @@ fn publish_cloud(
         let angle_deg = table.centres[i]; // car frame, -180..+180
         let angle_rad = angle_deg.to_radians();
 
-        // Car-local frame: +x = forward (+cos), +y = left (-sin, CW positive)
-        let x = dist_m * angle_rad.cos();
-        //WARN : might be inverted if lidar has clock-wise angles
-        let y = -dist_m * angle_rad.sin();
-
-        points.push(LidarPoint {
-            x,
-            y,
-            dist_m,
-            angle_rad,
-            timestamp_us,
-        });
+        points.push(LidarPoint::from_polar(dist_m, angle_rad, timestamp_us));
     }
 
     let ts_us = monotonic_us();

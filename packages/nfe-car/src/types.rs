@@ -7,7 +7,7 @@
 ///
 /// One point in the car's local frame.
 ///   +x = forward, +y = left
-///   angle_deg: car-frame angle, -180..+180 (negative = right)
+///   angle_rad: car-frame angle, -π..+π (positive = left, negative = right)
 ///
 use std::f32::consts::{PI, TAU};
 use std::ops::Sub;
@@ -24,6 +24,16 @@ pub struct LidarPoint {
 }
 
 impl LidarPoint {
+    pub fn from_polar(dist_m: f32, angle_rad: f32, timestamp_us: u64) -> Self {
+        Self {
+            x: dist_m * angle_rad.cos(),
+            y: dist_m * angle_rad.sin(),
+            dist_m,
+            angle_rad,
+            timestamp_us,
+        }
+    }
+
     pub fn angle_diff(&self, rhs: &Self) -> f32 {
         (self.angle_rad - rhs.angle_rad + PI).rem_euclid(TAU) - PI
     }
@@ -124,13 +134,11 @@ impl<'a> LidarCloudView<'a> {
 
             // Preserve original point geometry, replace distance
             let p = &self.points[i];
-            let angle_rad = p.angle_rad;
-            buf.push(LidarPoint {
-                dist_m: median_dist,
-                x: median_dist * angle_rad.cos(),
-                y: -median_dist * angle_rad.sin(),
-                ..*p
-            });
+            buf.push(LidarPoint::from_polar(
+                median_dist,
+                p.angle_rad,
+                p.timestamp_us,
+            ));
         }
 
         LidarCloudView {
@@ -256,5 +264,23 @@ impl ImuBias {
             bgy: sum_gy / n,
             bgz: sum_gz / n,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lidar_frame_convention_positive_angles_point_left() {
+        let left = LidarPoint::from_polar(2.0, std::f32::consts::FRAC_PI_2, 123);
+        assert!(left.x.abs() < 1.0e-6, "left x={}", left.x);
+        assert!((left.y - 2.0).abs() < 1.0e-6, "left y={}", left.y);
+        assert_eq!(left.timestamp_us, 123);
+
+        let right = LidarPoint::from_polar(2.0, -std::f32::consts::FRAC_PI_2, 456);
+        assert!(right.x.abs() < 1.0e-6, "right x={}", right.x);
+        assert!((right.y + 2.0).abs() < 1.0e-6, "right y={}", right.y);
+        assert_eq!(right.timestamp_us, 456);
     }
 }

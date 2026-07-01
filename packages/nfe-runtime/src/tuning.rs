@@ -9,7 +9,7 @@ use nfe_core::io::{ActuatorSink, SensorSource};
 use nfe_core::params::{ParamSpec, TunableExt};
 
 use crate::config::RuntimeConfig;
-use crate::pipeline::{EstimatorMode, Pipeline};
+use crate::pipeline::Pipeline;
 use crate::run_loop::run_sync;
 
 pub fn search_space() -> Vec<(String, ParamSpec)> {
@@ -33,30 +33,27 @@ pub struct EpisodeCost {
 
 pub fn evaluate_episode(
     cfg: RuntimeConfig,
-    estimator_mode: EstimatorMode,
     source: &mut dyn SensorSource,
 ) -> anyhow::Result<EpisodeCost> {
-    evaluate_episode_with_limit(cfg, estimator_mode, source, None)
+    evaluate_episode_with_limit(cfg, source, None)
 }
 
 pub fn evaluate_episode_with_limit(
     cfg: RuntimeConfig,
-    estimator_mode: EstimatorMode,
     source: &mut dyn SensorSource,
     max_ticks: Option<usize>,
 ) -> anyhow::Result<EpisodeCost> {
     let mut actuator = NullActuator;
-    evaluate_episode_with_actuator(cfg, estimator_mode, source, &mut actuator, max_ticks)
+    evaluate_episode_with_actuator(cfg, source, &mut actuator, max_ticks)
 }
 
 pub fn evaluate_episode_with_actuator(
     cfg: RuntimeConfig,
-    estimator_mode: EstimatorMode,
     source: &mut dyn SensorSource,
     actuator: &mut dyn ActuatorSink,
     max_ticks: Option<usize>,
 ) -> anyhow::Result<EpisodeCost> {
-    let mut pipeline = Pipeline::new(cfg, estimator_mode);
+    let mut pipeline = Pipeline::new(cfg);
     let out = run_sync(&mut pipeline, source, actuator, max_ticks)?;
     Ok(summarize(&out))
 }

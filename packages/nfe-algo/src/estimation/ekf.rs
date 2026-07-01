@@ -11,11 +11,11 @@
 //!   7: b_gz    gyro bias, z [rad/s]
 //!
 //! The bias states are what let the filter track slow IMU drift instead of
-//! baking a one-shot calibration into the dead-reckoner.
+//! baking a one-shot calibration into pose propagation.
 //!
 //! `predict` runs at IMU rate from raw (biased) accel/gyro. `correct_pose`
-//! folds in a world-frame pose measurement from scan-matching against the map
-//! (laps 2-5) or the mapper's incremental alignment (lap 1). `correct_zero_vy`
+//! folds in a world-frame pose measurement from scan-matching against the map.
+//! `correct_zero_vy`
 //! is a pseudo-measurement that curbs lateral-velocity drift on the corridor
 //! where side-slip is near zero at the speeds we run.
 //!
@@ -519,8 +519,15 @@ fn quad3(y: &[f32; 3], m: &[[f32; 3]; 3]) -> f32 {
 mod tests {
     use super::*;
 
+    fn assert_close(actual: f32, expected: f32, tolerance: f32) {
+        assert!(
+            (actual - expected).abs() <= tolerance,
+            "actual={actual} expected={expected} tolerance={tolerance}"
+        );
+    }
+
     #[test]
-    fn straight_drive_dead_reckons_forward() {
+    fn straight_drive_predicts_forward() {
         let mut ekf = Ekf::new(EkfParams::default());
         ekf.initialize(Pose2::new(0.0, 0.0, 0.0));
         // Accelerate forward at 1 m/s^2 for 1 s, then coast 1 s.
@@ -533,6 +540,71 @@ mod tests {
         // x ≈ 0.5 a t^2 = 0.5
         assert!((p.x - 0.5).abs() < 0.05, "x={}", p.x);
         assert!(p.y.abs() < 1e-3, "y drift={}", p.y);
+    }
+
+    #[test]
+    fn imu_prediction_matches_dead_reckon_phase3_baseline() {
+        let baseline: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/phase3_dead_reckon_baseline.json"
+        ))
+        .unwrap();
+        let expected = &baseline["estimate"];
+        let mut ekf = Ekf::new(EkfParams::default());
+        ekf.reset(Pose2::new(1.0, -2.0, 0.1), 1_000);
+
+        for sample in [
+            ImuSample {
+                ax: 0.5,
+                ay: 0.0,
+                gz: 0.1,
+                timestamp_us: 101_000,
+                ..Default::default()
+            },
+            ImuSample {
+                ax: 0.5,
+                ay: 0.0,
+                gz: 0.1,
+                timestamp_us: 201_000,
+                ..Default::default()
+            },
+            ImuSample {
+                ax: 0.0,
+                ay: 0.0,
+                gz: 0.1,
+                timestamp_us: 301_000,
+                ..Default::default()
+            },
+        ] {
+            ekf.predict_imu(sample);
+        }
+        let out = ekf.estimate();
+
+        assert_close(
+            out.pose.x,
+            expected["pose"]["x"].as_f64().unwrap() as f32,
+            1e-6,
+        );
+        assert_close(
+            out.pose.y,
+            expected["pose"]["y"].as_f64().unwrap() as f32,
+            1e-6,
+        );
+        assert_close(
+            out.pose.yaw,
+            expected["pose"]["yaw"].as_f64().unwrap() as f32,
+            1e-6,
+        );
+        assert_close(
+            out.motion.speed_ms,
+            expected["speed_ms"].as_f64().unwrap() as f32,
+            1e-6,
+        );
+        assert_close(
+            out.motion.yaw_rate_rad_s,
+            expected["yaw_rate_rad_s"].as_f64().unwrap() as f32,
+            1e-6,
+        );
+        assert_eq!(out.timestamp_us, expected["timestamp_us"].as_u64().unwrap());
     }
 
     #[test]

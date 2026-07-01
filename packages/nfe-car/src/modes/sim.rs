@@ -219,5 +219,6 @@ fn from_core_snapshot(snapshot: nfe_core::sensors::SensorSnapshot) -> SensorSnap
         },
         sonar_m: snapshot.sonar_m,
         sensor_fault: snapshot.sensor_fault,
+        start_line_crossed: snapshot.start_line_crossed,
     }
 }

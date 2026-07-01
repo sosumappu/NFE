@@ -144,5 +144,6 @@ fn from_runtime_snapshot(snapshot: nfe_core::sensors::SensorSnapshot) -> SensorS
         },
         sonar_m: snapshot.sonar_m,
         sensor_fault: snapshot.sensor_fault,
+        start_line_crossed: snapshot.start_line_crossed,
     }
 }

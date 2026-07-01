@@ -1,4 +1,4 @@
 //! Localization implementations.
 
+pub mod correlative;
 pub mod particle;
-pub mod scan_match;

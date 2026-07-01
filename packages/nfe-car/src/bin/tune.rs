@@ -10,7 +10,6 @@ use nfe_core::params::ParamSpec;
 use nfe_runtime::{
     config::RuntimeConfig,
     input_replay::McapSensorReplaySource,
-    pipeline::EstimatorMode,
     tuning::{evaluate_episode_with_limit, search_space},
 };
 use nfe_sim::{
@@ -113,6 +112,7 @@ impl Args {
     }
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone)]
 enum TuneMode {
     Sim {
@@ -306,7 +306,7 @@ fn to_core_snapshot(snapshot: nfe_car::state::SensorSnapshot) -> nfe_core::senso
         },
         sonar_m: snapshot.sonar_m,
         sensor_fault: snapshot.sensor_fault,
-        start_line_crossed: false,
+        start_line_crossed: snapshot.start_line_crossed,
     }
 }
 
@@ -440,6 +440,7 @@ fn sim_eval_seeds(base_seed: Option<u64>, count: usize) -> Vec<u64> {
         .collect()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn evaluate_sim_candidate(
     cfg: RuntimeConfig,
     world: &World,
@@ -531,12 +532,8 @@ fn run_candidate_evaluation(
             }
             TuneMode::Replay { .. } | TuneMode::Live { .. } => {
                 let mut source = mode.source()?;
-                let cost = evaluate_episode_with_limit(
-                    cfg.clone(),
-                    EstimatorMode::DeadReckon,
-                    source.as_mut(),
-                    Some(max_ticks),
-                )?;
+                let cost =
+                    evaluate_episode_with_limit(cfg.clone(), source.as_mut(), Some(max_ticks))?;
                 CandidateScore::replay(
                     if cost.ticks > 0 {
                         cost.cost as f64
@@ -692,12 +689,7 @@ fn main() -> Result<()> {
                     Ok(source) => source,
                     Err(e) => return 1.0e9 + format!("{e:#}").len() as f64,
                 };
-                match evaluate_episode_with_limit(
-                    cfg,
-                    EstimatorMode::DeadReckon,
-                    source.as_mut(),
-                    Some(max_ticks),
-                ) {
+                match evaluate_episode_with_limit(cfg, source.as_mut(), Some(max_ticks)) {
                     Ok(cost) if cost.ticks > 0 => cost.cost as f64,
                     Ok(_) => 1.0e9,
                     Err(e) => 1.0e9 + format!("{e:#}").len() as f64,

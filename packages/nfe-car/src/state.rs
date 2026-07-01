@@ -89,6 +89,8 @@ pub struct SensorSnapshot {
     pub sonar_m: [f32; 3],
     /// Any sensor fault flag (diagnostic): OR of per-sensor flags
     pub sensor_fault: bool,
+    /// Rising edge from a physical or replayed start/finish line detector.
+    pub start_line_crossed: bool,
 }
 
 impl SensorSnapshot {
@@ -104,7 +106,7 @@ impl SensorSnapshot {
             return true;
         }
         self.lidar
-            .nearest_in_arc(0.0, 30.0) // ±30° front cone
+            .nearest_in_arc(0.0, 30.0_f32.to_radians())
             .is_some_and(|p| p.dist_m < threshold_m)
     }
 }
@@ -188,6 +190,7 @@ impl SharedState {
                 || self.sensor_health.sonar[0].load(Ordering::Relaxed)
                 || self.sensor_health.sonar[1].load(Ordering::Relaxed)
                 || self.sensor_health.sonar[2].load(Ordering::Relaxed)),
+            start_line_crossed: false,
         }
     }
 

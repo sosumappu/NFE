@@ -95,11 +95,12 @@ fn runtime_config_from_car_compat(config: &CarConfigCompat) -> RuntimeConfig {
     let mut runtime = RuntimeConfig {
         hz: config.control.hz,
         mapping: MappingRuntimeConfig {
-            enabled: false,
-            ..Default::default()
+            enabled: config.mapping.enabled,
+            queue_capacity: config.mapping.queue_capacity,
         },
         ..Default::default()
     };
+    apply_algo_overlay(&mut runtime, &config.algo);
     runtime.perception_mode = config.control.perception.mode;
 
     runtime.algo.perception.ransac.inlier_dist_m = config.control.perception.ransac.inlier_dist_m;
@@ -152,16 +153,56 @@ fn runtime_config_from_car_compat(config: &CarConfigCompat) -> RuntimeConfig {
     runtime
 }
 
+fn apply_algo_overlay(runtime: &mut RuntimeConfig, overlay: &Value) {
+    if overlay.is_null() {
+        return;
+    }
+    let mut algo = serde_json::to_value(&runtime.algo).expect("algo config serializes");
+    merge_json(&mut algo, overlay);
+    runtime.algo = serde_json::from_value(algo).expect("algo overlay matches runtime schema");
+}
+
+fn merge_json(base: &mut Value, overlay: &Value) {
+    match (base, overlay) {
+        (Value::Object(base), Value::Object(overlay)) => {
+            for (key, value) in overlay {
+                merge_json(base.entry(key.clone()).or_insert(Value::Null), value);
+            }
+        }
+        (base, overlay) => *base = overlay.clone(),
+    }
+}
+
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 #[serde(default)]
 struct CarConfigCompat {
     control: ControlConfigCompat,
+    mapping: MappingConfigCompat,
+    algo: Value,
 }
 
 impl Default for CarConfigCompat {
     fn default() -> Self {
         Self {
             control: ControlConfigCompat::default(),
+            mapping: MappingConfigCompat::default(),
+            algo: Value::Null,
+        }
+    }
+}
+
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[serde(default)]
+struct MappingConfigCompat {
+    enabled: bool,
+    queue_capacity: usize,
+}
+
+impl Default for MappingConfigCompat {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            queue_capacity: 4,
         }
     }
 }
@@ -424,5 +465,43 @@ mod tests {
         assert_eq!(reloaded.algo.apex.side_lookahead_fov_deg, 55.0);
         assert_eq!(reloaded.algo.apex.side_lookahead_center_deg, 88.0);
         assert_eq!(reloaded.algo.apex.apex_lookahead_weight, 0.6);
+    }
+
+    #[test]
+    fn car_config_conversion_preserves_mapping_runtime_fields() {
+        let mut car = CarConfigCompat::default();
+        car.mapping.enabled = true;
+        car.mapping.queue_capacity = 7;
+
+        let runtime = runtime_config_from_car_compat(&car);
+
+        assert!(runtime.mapping.enabled);
+        assert_eq!(runtime.mapping.queue_capacity, 7);
+    }
+
+    #[test]
+    fn car_config_conversion_merges_algo_overlay() {
+        let car = CarConfigCompat {
+            algo: serde_json::json!({
+                "mapper": {
+                    "submap_translation_m": 0.75,
+                    "submap_yaw_rad": 0.25
+                },
+                "particle": {
+                    "resample_ess_fraction": 0.8,
+                    "recovery_fraction": 0.4,
+                    "min_confidence": 0.2
+                }
+            }),
+            ..CarConfigCompat::default()
+        };
+
+        let runtime = runtime_config_from_car_compat(&car);
+
+        assert_eq!(runtime.algo.mapper.submap_translation_m, 0.75);
+        assert_eq!(runtime.algo.mapper.submap_yaw_rad, 0.25);
+        assert_eq!(runtime.algo.particle.resample_ess_fraction, 0.8);
+        assert_eq!(runtime.algo.particle.recovery_fraction, 0.4);
+        assert_eq!(runtime.algo.particle.min_confidence, 0.2);
     }
 }

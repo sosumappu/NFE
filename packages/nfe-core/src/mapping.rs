@@ -13,9 +13,42 @@ pub struct BoundarySet {
     pub walls: Vec<WallLine>,
 }
 
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct OccupancyGrid {
+    pub origin: crate::Point2,
+    pub resolution_m: f32,
+    pub width: u32,
+    pub height: u32,
+    /// Row-major log-odds occupancy values. Positive means occupied, negative
+    /// means observed free space, and zero means unknown.
+    pub cells: Vec<f32>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct DistanceField {
+    pub origin: crate::Point2,
+    pub resolution_m: f32,
+    pub width: u32,
+    pub height: u32,
+    /// Row-major distance-to-nearest-occupied-cell values in metres.
+    pub distances_m: Vec<f32>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct SubmapSummary {
+    pub id: u64,
+    pub start_pose: Pose2,
+    pub revision: u64,
+    pub scan_count: u64,
+    pub active: bool,
+}
+
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct TrackMap {
     pub boundaries: BoundarySet,
+    pub occupancy: Option<OccupancyGrid>,
+    pub distance_field: Option<DistanceField>,
+    pub submaps: Vec<SubmapSummary>,
     pub complete: bool,
     pub revision: u64,
 }
@@ -44,8 +77,9 @@ pub struct MapStatus {
     pub processed_scans: u64,
     pub dropped_scans: u64,
     pub latest_revision: u64,
+    pub active_submap_id: u64,
+    pub submap_count: u32,
     pub loop_closure: LoopClosureReport,
-    pub raceline_ready: bool,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]

@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 #[serde(default)]
 pub struct Config {
     pub control: ControlConfig,
+    pub mapping: MappingConfig,
+    pub algo: serde_json::Value,
     pub live: LiveConfig,
     pub sim: SimConfig,
     pub init: InitConfig,
@@ -238,6 +240,22 @@ impl Default for StartGateConfig {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
+pub struct MappingConfig {
+    pub enabled: bool,
+    pub queue_capacity: usize,
+}
+
+impl Default for MappingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            queue_capacity: 4,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default)]
 pub struct LiveConfig {
     pub lidar_port: String,
 }
@@ -250,7 +268,7 @@ impl Default for LiveConfig {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct SimConfig {
     #[serde(flatten)]
@@ -258,17 +276,6 @@ pub struct SimConfig {
     pub kinematic: nfe_sim::KinematicBicycleParams,
     pub dynamic: nfe_sim::DynamicBicycleParams,
     pub latency: nfe_sim::LatencyParams,
-}
-
-impl Default for SimConfig {
-    fn default() -> Self {
-        Self {
-            footprint: nfe_sim::VehicleFootprintParams::default(),
-            kinematic: nfe_sim::KinematicBicycleParams::default(),
-            dynamic: nfe_sim::DynamicBicycleParams::default(),
-            latency: nfe_sim::LatencyParams::default(),
-        }
-    }
 }
 
 // ── Safety configuration (tunable constants moved out of code) ───────────-
@@ -339,11 +346,17 @@ mod tests {
     #[test]
     fn toml_loads_and_defaults_missing_fields() {
         let path = std::env::temp_dir().join(format!("nfe-{}.toml", std::process::id()));
-        std::fs::write(&path, "[control]\nhz=50\n[live]\nlidar_port='/tmp/lidar'\n").unwrap();
+        std::fs::write(
+            &path,
+            "[control]\nhz=50\n[mapping]\nenabled=true\nqueue_capacity=9\n[live]\nlidar_port='/tmp/lidar'\n",
+        )
+        .unwrap();
 
         let config = Config::from_toml_path(&path).unwrap();
         assert_eq!(config.control.hz, 50);
         assert_eq!(config.control.estop_dist_m, 0.30);
+        assert!(config.mapping.enabled);
+        assert_eq!(config.mapping.queue_capacity, 9);
         assert_eq!(config.live.lidar_port, "/tmp/lidar");
 
         let _ = std::fs::remove_file(path);
@@ -354,6 +367,22 @@ mod tests {
         let config = Config::load(Some("/no/such/file.toml"));
         assert_eq!(config.control.hz, 100);
         assert_eq!(config.live.lidar_port, "/dev/lidar");
+    }
+
+    #[test]
+    fn toml_loads_algo_overlay() {
+        let path = std::env::temp_dir().join(format!("nfe-algo-{}.toml", std::process::id()));
+        std::fs::write(
+            &path,
+            "[algo.mapper]\nsubmap_translation_m=0.75\n[algo.particle]\nresample_ess_fraction=0.8\n",
+        )
+        .unwrap();
+
+        let config = Config::from_toml_path(&path).unwrap();
+        assert_eq!(config.algo["mapper"]["submap_translation_m"], 0.75);
+        assert_eq!(config.algo["particle"]["resample_ess_fraction"], 0.8);
+
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

@@ -1,7 +1,7 @@
 use nfe_core::sensors::LidarPoint;
 use nfe_core::wrap_angle;
 
-use super::scan::{ApexWall, HermiteBounds};
+use super::scan::{angle_diff_rad, ApexWall, HermiteBounds};
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct OppositeParams {
@@ -34,7 +34,7 @@ impl ApexGeometry {
         timestamp_us: u64,
     ) -> LidarPoint {
         let target_dist = (apex.dist_m + opposite.dist_m) / 2.0;
-        let angle_diff = opposite.angle_diff(&apex);
+        let angle_diff = angle_diff_rad(opposite.angle_rad, apex.angle_rad);
         let target_angle = wrap_angle(apex.angle_rad + angle_diff / 2.0);
 
         LidarPoint::from_polar(target_dist, target_angle, timestamp_us)
@@ -114,12 +114,12 @@ fn hermite_angle_at_range(
     let dot_theta_a = if prev_range.abs() < f32::EPSILON {
         0.0
     } else {
-        a.angle_diff(prev) / prev_range
+        angle_diff_rad(a.angle_rad, prev.angle_rad) / prev_range
     };
     let dot_theta_b = if next_range.abs() < f32::EPSILON {
         0.0
     } else {
-        next.angle_diff(b) / next_range
+        angle_diff_rad(next.angle_rad, b.angle_rad) / next_range
     };
 
     let t = ((range_m - a.dist_m) / d_range).clamp(0.0, 1.0);
@@ -133,7 +133,7 @@ fn hermite_angle_at_range(
 
     wrap_angle(
         h00 * a.angle_rad
-            + h10 * (a.angle_rad + b.angle_diff(a))
+            + h10 * (a.angle_rad + angle_diff_rad(b.angle_rad, a.angle_rad))
             + h01 * dot_theta_a
             + h11 * dot_theta_b,
     )
@@ -173,7 +173,11 @@ fn angular_centroid_rad(points: &[LidarPoint]) -> f32 {
 }
 
 fn pull_toward_origin(point: LidarPoint, margin_m: f32) -> LidarPoint {
-    point.with_distance((point.dist_m - margin_m.max(0.0)).max(0.0))
+    LidarPoint::from_polar(
+        (point.dist_m - margin_m.max(0.0)).max(0.0),
+        point.angle_rad,
+        point.timestamp_us,
+    )
 }
 
 #[cfg(test)]

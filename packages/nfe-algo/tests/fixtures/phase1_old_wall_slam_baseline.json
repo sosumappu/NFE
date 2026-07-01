@@ -1,0 +1,56 @@
+{
+  "description": "Phase 1 removal baseline for the pre-occupancy RANSAC wall mapper and wall-to-wall scan matcher on a fixed synthetic corridor scan.",
+  "input": {
+    "scan": "two horizontal corridor walls y=±0.5 m, x=0.0..1.95 m at 0.05 m spacing",
+    "mapper_seed": 659918,
+    "localizer_seed": 85314065,
+    "localizer_prior": {
+      "x": 0.03,
+      "y": -0.02,
+      "yaw": 0.02
+    }
+  },
+  "mapper": {
+    "submitted_scans": 1,
+    "processed_scans": 1,
+    "revision": 1,
+    "complete": true,
+    "wall_count": 2,
+    "loop_closure": {
+      "detected": true,
+      "residual_m": 0.0,
+      "overlap": 1.0
+    },
+    "walls": [
+      {
+        "nx": -0.0,
+        "ny": 1.0,
+        "d": -0.5,
+        "p0": { "x": 0.0, "y": -0.5 },
+        "p1": { "x": 1.950000048, "y": -0.5 },
+        "support": 0.5
+      },
+      {
+        "nx": -0.0,
+        "ny": 1.0,
+        "d": 0.5,
+        "p0": { "x": 0.0, "y": 0.5 },
+        "p1": { "x": 1.950000048, "y": 0.5 },
+        "support": 0.5
+      }
+    ]
+  },
+  "localization": {
+    "confidence": 0.997493505,
+    "residual_m": 0.000501305,
+    "used_fallback": false,
+    "measurement": {
+      "pose": {
+        "x": 0.029999999,
+        "y": -0.019699216,
+        "yaw": 0.00999999
+      },
+      "quality": 0.997493505
+    }
+  }
+}

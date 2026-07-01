@@ -8,6 +8,9 @@ pub struct RaceLinePoint {
     pub yaw: f32,
     pub curvature: f32,
     pub speed_ms: f32,
+    /// Longitudinal acceleration target to the next raceline sample [m/s²].
+    #[serde(default)]
+    pub accel_x_ms2: f32,
     pub s_m: f32,
 }
 

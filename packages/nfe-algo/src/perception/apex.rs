@@ -11,7 +11,7 @@ use nfe_core::sensors::LidarCloud;
 use std::f32::consts::PI;
 
 use self::geometry::{ApexGeometry, OppositeParams};
-use self::scan::{nearest_front_obstacle_m, ApexScan};
+use self::scan::{nearest_front_obstacle_m, nearest_in_arc, ApexScan};
 use self::tracking::ApexTracker;
 use super::{ApexObservation, NoopPerceptionObserver, PerceptionObserver};
 
@@ -265,7 +265,7 @@ impl ApexCorridorPerception {
         let center = self.params.side_lookahead_center_deg.to_radians();
 
         // Use a conservative side distance when one side has no return.
-        let dist = |angle| cloud.nearest_in_arc(angle, fov).map_or(0.5, |p| p.dist_m);
+        let dist = |angle| nearest_in_arc(cloud, angle, fov).map_or(0.5, |p| p.dist_m);
         let side_diff = (dist(center) - dist(-center)).abs();
 
         self.lookahead_from_signal(side_diff)

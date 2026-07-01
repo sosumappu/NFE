@@ -1,0 +1,25 @@
+{
+  "description": "Phase 3 removal baseline for the pre-EKF-primary dead-reckon estimator on a fixed IMU sequence.",
+  "initial_pose": {
+    "x": 1.0,
+    "y": -2.0,
+    "yaw": 0.1,
+    "timestamp_us": 1000
+  },
+  "imu_samples": [
+    { "ax": 0.5, "ay": 0.0, "gz": 0.1, "timestamp_us": 101000 },
+    { "ax": 0.5, "ay": 0.0, "gz": 0.1, "timestamp_us": 201000 },
+    { "ax": 0.0, "ay": 0.0, "gz": 0.1, "timestamp_us": 301000 }
+  ],
+  "estimate": {
+    "pose": {
+      "x": 1.014897943,
+      "y": -1.998254061,
+      "yaw": 0.129999876
+    },
+    "speed_ms": 0.100000001,
+    "yaw_rate_rad_s": 0.100000001,
+    "confidence": 1.0,
+    "timestamp_us": 301000
+  }
+}

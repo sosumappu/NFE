@@ -32,7 +32,7 @@ pub fn run_sync(
 mod tests {
     use super::*;
     use crate::config::RuntimeConfig;
-    use crate::pipeline::{EstimatorMode, Pipeline};
+    use crate::pipeline::Pipeline;
     use nfe_core::estimation::ImuSample;
     use nfe_core::sensors::{LidarCloud, LidarPoint, SensorSnapshot};
     use nfe_core::Pose2;
@@ -98,7 +98,7 @@ mod tests {
     fn run_sync_drives_until_source_empty() {
         let mut cfg = RuntimeConfig::default();
         cfg.mapping.enabled = false;
-        let mut p = Pipeline::new(cfg, EstimatorMode::DeadReckon);
+        let mut p = Pipeline::new(cfg);
         p.reset(Pose2::default(), 0);
         let mut src = VecSource(vec![snap(10_000), snap(20_000)]);
         let mut sink = Sink::default();

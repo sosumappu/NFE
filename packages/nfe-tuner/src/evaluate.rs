@@ -3,7 +3,7 @@ use nfe_core::control::ControllerStatus;
 use nfe_core::io::{ActuatorSink, SensorSource};
 use nfe_core::Pose2;
 use nfe_runtime::config::RuntimeConfig;
-use nfe_runtime::pipeline::{EstimatorMode, Pipeline, StepOutput};
+use nfe_runtime::pipeline::{Pipeline, StepOutput};
 use nfe_sim::{
     LatencyParams, SimulatorSource, TrackProgress, VehicleFootprintParams, VehicleModel,
     VehicleState, World,
@@ -66,7 +66,7 @@ pub fn evaluate_sim_laps(
             footprint,
         )
     };
-    let mut pipeline = Pipeline::new(cfg, EstimatorMode::DeadReckon);
+    let mut pipeline = Pipeline::new(cfg);
     pipeline.reset(
         Pose2::new(world.start.x, world.start.y, world.start.yaw_rad),
         0,

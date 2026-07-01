@@ -53,9 +53,9 @@ packages/
 | -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
 | `nfe-tunable-derive` | Procedural macro for deriving the tunable parameter registry                                                                                                                  | proc-macro dependencies only                                 |
 | `nfe-core`           | Shared domain types, `SensorSource`/`ActuatorSink` traits, telemetry event taxonomy, tunable parameter traits                                                                 | `nfe-tunable-derive`                                         |
-| `nfe-algo`           | Pure algorithm implementation: RANSAC/corridor perception, EKF/dead-reckon estimation, localization, mapping, supervisor, LQR/PID/speed/reactive control, raceline components | `nfe-core`                                                   |
+| `nfe-algo`           | Pure algorithm implementation: RANSAC/corridor perception, EKF estimation, localization, mapping, supervisor, LQR/PID/speed/reactive control, raceline components | `nfe-core`                                                   |
 | `nfe-sim`            | Deterministic simulation source, world model, vehicle dynamics, synthetic sensors, noise                                                                                      | `nfe-core` only                                              |
-| `nfe-runtime`        | `Pipeline::step`, `TelemetryBus`, MCAP input replay, `McapSink`, StartGate, runtime tuning helpers, mapping worker/session glue                                               | `nfe-core`, `nfe-algo`                                       |
+| `nfe-runtime`        | `Pipeline::step`, `TelemetryBus`, MCAP input replay, `McapSink`, StartGate, runtime tuning helpers, mapping/raceline worker and session glue                                   | `nfe-core`, `nfe-algo`                                       |
 | `nfe-tuner`          | Optimizer-independent tuning search-space JSON, flat candidate application, candidate scores, and sim lap evaluation                                                          | `nfe-core`, `nfe-runtime`, `nfe-sim`                         |
 | `nfe-car`            | Hardware adapters, config/CLI parsing, system mode dispatch, diagnostics, tuning binary, arming helper                                                                        | `nfe-core`, `nfe-runtime`, `nfe-sim`, `nfe-tuner`, hardware/system crates |
 
@@ -160,6 +160,33 @@ nfe-arm --disarm --host nfe.local --port 4578 --token nfe
 Defaults are `--host 127.0.0.1`, `--port 4578`, and `--token nfe`. The UDP
 payload is exactly `NFE_ARM <token> arm` or `NFE_ARM <token> disarm`.
 
+### `car-raceline`
+
+`car-raceline` is an offline Foxglove preview helper that loads a simulator world from `worlds/tracks/*.json`, converts its walls into a `TrackMap` with both legacy wall boundaries and a rasterized occupancy grid, runs `nfe-algo`'s occupancy-first raceline solver, and writes an MCAP containing the same scene topics used by runtime recordings: `/mapping/global_map_scene` and `/planning/raceline_scene`.
+
+```bash
+car-raceline worlds/tracks/minispa.json --out /tmp/minispa-raceline.mcap
+car-raceline worlds/tracks/minispa.json --frame world --out /tmp/minispa-raceline-world.mcap
+```
+
+Open the output MCAP in Foxglove to inspect the wall scene and solver output. The helper defaults to the start-pose frame for convenient vehicle-relative viewing; `--frame world` exercises the same wall-to-occupancy rasterization and occupancy-first solver path in world coordinates. Raceline speeds come from the offline forward/backward velocity-profile limits configured under `[algo.raceline_solver]`.
+
+### `car-bench`
+
+`car-bench` runs open-loop dynamics identification scripts for the raceline controller. Sim modes run against `nfe-sim`; live modes command the real car on the ground and write CSV samples plus an optional JSON summary. Live modes are intentionally conservative starting points and require an explicit acknowledgement flag.
+
+```bash
+car-bench sim-throttle-step --config packages/nfe-car/nfe.toml --csv /tmp/throttle.csv --json /tmp/throttle.json
+car-bench sim-coastdown --config packages/nfe-car/nfe.toml --csv /tmp/coast.csv
+car-bench sim-steering-sweep --config packages/nfe-car/nfe.toml --csv /tmp/steer.csv
+
+car-bench live-throttle-step --config packages/nfe-car/nfe.toml --csv /tmp/live-throttle.csv --i-understand-open-loop-driving
+car-bench live-coastdown --config packages/nfe-car/nfe.toml --csv /tmp/live-coast.csv --i-understand-open-loop-driving
+car-bench live-steering-sweep --config packages/nfe-car/nfe.toml --csv /tmp/live-steer.csv --i-understand-open-loop-driving
+```
+
+The default live limits (`--duration-s 4`, `--max-speed-ms 1`, `--max-throttle 0.12`, `--max-steering-rad 0.15`, `--max-yaw-rate-rad-s 2`) are conservative guesses, not validated vehicle limits. Keep them conservative through first live runs and relax only after abort handling, safe-state behavior, and the operator kill path are verified on the actual car.
+
 ### `car-diag`
 
 `car-diag` is the Raspberry Pi hardware diagnostic binary. Based on the
@@ -202,7 +229,7 @@ starts the loop.
 
 The NixOS `car.service` runs `car --config ${pkgs.nfe-car}/share/nfe-car/nfe.toml`, and the package installs `packages/nfe-car/nfe.toml` at that path. Changes to `packages/nfe-car/nfe.toml` therefore apply to live mode after rebuilding/deploying the package and restarting the service; the running process does not hot-reload the file.
 
-Live mode maps `[control.perception]`, `[control.perception.ransac]`, and `[control.perception.apex]` into the runtime perception stack, and `[control.stanley]` into the reactive Stanley controller. Set `control.perception.mode = "corridor"` for RANSAC wall/corridor perception or `"apex"` for discontinuity/apex perception. Manual runs outside systemd still need `--config <path>` if they should use a TOML file instead of compiled defaults.
+Live mode maps `[control.perception]`, `[control.perception.ransac]`, and `[control.perception.apex]` into the runtime perception stack, `[control.stanley]` into the reactive Stanley controller, and `[mapping]` into the bounded runtime occupancy-mapping worker (`enabled`, `queue_capacity`). Runtime SLAM constants that are not part of the legacy control table live in `[algo.mapper]`, `[algo.correlative]`, and `[algo.particle]` in `packages/nfe-car/nfe.toml`; `best_runtime_config.json` is tuning output and is not read by live mode. The mapper maintains submap summaries and deskews LiDAR points from their per-point timestamps before inserting them. Set `control.perception.mode = "corridor"` for RANSAC wall/corridor perception or `"apex"` for discontinuity/apex perception. Manual runs outside systemd still need `--config <path>` if they should use a TOML file instead of compiled defaults.
 
 ### Simulation mode
 
@@ -379,7 +406,7 @@ tune
 
 Extra flags can be appended to override defaults, for example `tune --trials 50 --storage sqlite:///runs/tuning/apex-smoke.db`.
 
-The Optuna runner seeds trial 0 from the current `--config`, records rich score attributes (`status`, lap progress, RMS errors, speed, crash flag), and can persist per-trial `candidate.json`, `score.json`, `stdout.log`, and `stderr.log` files via `--trial-dir`. Sim crashes are completed trials with a high objective score instead of pruned infrastructure failures, so TPE can learn to avoid unsafe regions.
+The Optuna runner seeds trial 0 from the current `--config`, records rich score attributes (`status`, lap progress, RMS errors, speed, crash flag), and can persist per-trial `candidate.json`, `score.json`, `stdout.log`, `stderr.log`, and `runtime_config.json` files via `--trial-dir`. It refreshes `--out` from the best complete trial when starting, when a new best trial completes, and when optimization exits, so interrupted runs still leave the best-known runtime config. Recover a specific complete trial with `--recover-trial <n>`, for example `tune --trials 0 --recover-trial 1226 --target-laps 5`. Sim crashes are completed trials with a high objective score instead of pruned infrastructure failures, so TPE can learn to avoid unsafe regions.
 
 Plot the Optuna study from the repository root in the same dev shell or direnv environment:
 
@@ -452,7 +479,7 @@ poses, and wall scenes render without a custom plugin.
 | `/planning/race_reference`          | JSON     | Race reference telemetry               |
 | `/supervisor/state`                 | JSON     | Supervisor state telemetry             |
 | `/supervisor/transition`            | JSON     | Supervisor transition telemetry        |
-| `/localization/scan_match`          | JSON     | Scan-match localization telemetry      |
+| `/localization/scan_match`          | JSON     | Correlative scan-match localization telemetry |
 | `/localization/particle_filter`     | JSON     | Particle-filter localization telemetry |
 | `/localization/result`              | JSON     | Localization result telemetry          |
 | `/world/snapshot`                   | JSON     | Simulation world snapshot              |

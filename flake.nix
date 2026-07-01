@@ -193,51 +193,62 @@
             pkg-config
             protobuf
             mcap-cli
+            cargo-audit
             uv
             tune
             tuner-plot
           ]
           ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
             rt-tests
+            fontconfig
+            stdenv.cc.cc.lib
+            udev
           ];
 
-        shellHook = ''
-          echo ""
-          echo "  NeverFastEnough dev shell"
-          echo "  ─────────────────────────────────────────────────────────────────"
-          echo "  Build"
-          echo "    nom build .#packages.aarch64-linux.nfe-car  build all binaries"
-          echo "    cross build --release --target aarch64-unknown-linux-gnu  fast binary build"
-          echo ""
-          echo "  Deploy"
-          echo "    deploy .#nfe                                      deploy to Pi"
-          echo "    deploy .#nfe -- --rollback                        roll back one generation"
-          echo "    deploy .#nfe -- --dry-activate                    dry run"
-          echo ""
-          echo "  On the Pi (via SSH)"
-          echo "    ssh localhost@nfe.local 'car-diag all'            verify all sensors"
-          echo "    ssh localhost@nfe.local 'car-diag imu --once'     single IMU reading"
-          echo "    ssh localhost@nfe.local 'car-diag lidar'          live LIDAR stats"
-          echo "    ssh localhost@nfe.local 'car-diag sonar --once'   sonar pass/fail"
-          echo "    ssh localhost@nfe.local 'car --record /tmp/s.bin' record a session"
-          echo "    ssh localhost@nfe.local 'nfe-arm --arm --host nfe.local' arm StartGate"
-          echo "    ssh localhost@nfe.local 'systemctl restart car'   restart service"
-          echo "    ssh localhost@nfe.local 'journalctl -u car -f'    live service logs"
-          echo ""
-          echo "  On Dev Machine"
-          echo "    cargo run --bin car-monitor -- --pi nfe.local     live dashboard"
-          echo "    tune                                             run Optuna apex tuning from repo root"
-          echo "    tuner-plot                                       plot Optuna tuning results"
-          echo "    cargo run --release -- --replay sessions/s.bin    replay session"
-          echo "    cargo run --release -- --replay sessions/s.bin --fast  fast replay"
-          echo "    scp localhost@nfe.local:/tmp/s.bin sessions/      copy session file"
-          echo ""
-          echo "  RT verification"
-          echo "    ssh localhost@nfe.local 'cyclictest -p80 -t1 -a3 -n -q -D60'  latency test"
-          echo "    ssh localhost@nfe.local 'cat /sys/devices/system/cpu/isolated' check core isolation"
-          echo "  ─────────────────────────────────────────────────────────────────"
-          echo ""
-        '';
+        shellHook =
+          ''
+            echo ""
+            echo "  NeverFastEnough dev shell"
+            echo "  ─────────────────────────────────────────────────────────────────"
+            echo "  Build"
+            echo "    nom build .#packages.aarch64-linux.nfe-car  build all binaries"
+            echo "    cross build --release --target aarch64-unknown-linux-gnu  fast binary build"
+            echo ""
+            echo "  Deploy"
+            echo "    deploy .#nfe                                      deploy to Pi"
+            echo "    deploy .#nfe -- --rollback                        roll back one generation"
+            echo "    deploy .#nfe -- --dry-activate                    dry run"
+            echo ""
+            echo "  On the Pi (via SSH)"
+            echo "    ssh localhost@nfe.local 'car-diag all'            verify all sensors"
+            echo "    ssh localhost@nfe.local 'car-diag imu --once'     single IMU reading"
+            echo "    ssh localhost@nfe.local 'car-diag lidar'          live LIDAR stats"
+            echo "    ssh localhost@nfe.local 'car-diag sonar --once'   sonar pass/fail"
+            echo "    ssh localhost@nfe.local 'car --record /tmp/s.bin' record a session"
+            echo "    ssh localhost@nfe.local 'nfe-arm --arm --host nfe.local' arm StartGate"
+            echo "    ssh localhost@nfe.local 'systemctl restart car'   restart service"
+            echo "    ssh localhost@nfe.local 'journalctl -u car -f'    live service logs"
+            echo ""
+            echo "  On Dev Machine"
+            echo "    cargo run --bin car-monitor -- --pi nfe.local     live dashboard"
+            echo "    tune                                             run Optuna apex tuning from repo root"
+            echo "    tuner-plot                                       plot Optuna tuning results"
+            echo "    cargo run --release -- --replay sessions/s.bin    replay session"
+            echo "    cargo run --release -- --replay sessions/s.bin --fast  fast replay"
+            echo "    scp localhost@nfe.local:/tmp/s.bin sessions/      copy session file"
+            echo ""
+            echo "  RT verification"
+            echo "    ssh localhost@nfe.local 'cyclictest -p80 -t1 -a3 -n -q -D60'  latency test"
+            echo "    ssh localhost@nfe.local 'cat /sys/devices/system/cpu/isolated' check core isolation"
+            echo "  ─────────────────────────────────────────────────────────────────"
+            echo ""
+          ''
+          + pkgs.lib.optionalString pkgs.stdenv.isLinux ''
+            export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath [
+              pkgs.stdenv.cc.cc.lib
+              pkgs.fontconfig
+            ]}:$LD_LIBRARY_PATH"
+          '';
       };
     });
   };

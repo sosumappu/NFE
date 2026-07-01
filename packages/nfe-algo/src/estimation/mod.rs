@@ -1,6 +1,4 @@
-//! State estimation. `ekf` is the full pose+bias filter used by the map-based
-//! path. The `StateEstimator` trait (handoff item) abstracts over the EKF and
-//! the cheap dead-reckon estimator so the reactive path pays no SLAM tax.
+//! State estimation. `ekf` is the pose+bias filter used by the runtime pipeline
+//! for both reactive fallback and map-based correction.
 
-pub mod dead_reckon;
 pub mod ekf;

@@ -6,12 +6,12 @@
 
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::BufWriter;
+use std::io::{BufWriter, Seek, Write};
 use std::path::Path;
 use std::thread;
 use std::time::Instant;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use mcap::{records::MessageHeader, Writer};
 use nfe_core::estimation::StateEstimate;
 use nfe_core::sensors::SensorSnapshot;
@@ -20,19 +20,17 @@ use nfe_core::telemetry::{
     LocalizationTelemetry, LocalizationTelemetryKind, MappingTelemetry, MappingTelemetryKind,
     PerceptionTelemetry, PerceptionTelemetryKind, PlanningTelemetry, PlanningTelemetryKind,
     RaceTelemetry, RaceTelemetryKind, SensorTelemetry, StartGateTelemetry, SupervisorTelemetry,
-    SupervisorTelemetryKind, TelemetryEvent, TelemetryTopic, WallKind, WorldTelemetry,
+    SupervisorTelemetryKind, TelemetryEvent, TelemetryTopic, WorldTelemetry,
 };
 use prost::Message;
 use tracing::{info, warn};
 
+use crate::foxglove_scenes::{
+    build_map_scene, build_raceline_scene, build_world_walls_scene, FOXGLOVE_DESCRIPTOR,
+};
 use crate::telemetry_bus::{TelemetryReceiver, TelemetrySink};
 
-pub mod pb_fg {
-    include!(concat!(env!("OUT_DIR"), "/foxglove.rs"));
-}
-
-const FOXGLOVE_DESCRIPTOR: &[u8] =
-    include_bytes!(concat!(env!("OUT_DIR"), "/foxglove_descriptor.bin"));
+pub use crate::foxglove_scenes::pb_fg;
 
 pub struct McapSink {
     handle: Option<thread::JoinHandle<()>>,
@@ -70,6 +68,61 @@ impl Drop for McapSink {
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
         }
+    }
+}
+
+pub struct McapSceneWriter<W: Write + Seek> {
+    writer: Writer<W>,
+    channels: HashMap<&'static str, u16>,
+}
+
+impl McapSceneWriter<BufWriter<File>> {
+    pub fn create(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
+        let file = File::create(path)
+            .with_context(|| format!("cannot create telemetry recording: {}", path.display()))?;
+        Self::new(BufWriter::new(file))
+    }
+}
+
+impl<W: Write + Seek> McapSceneWriter<W> {
+    pub fn new(writer: W) -> Result<Self> {
+        let mut writer = Writer::new(writer).context("failed to init mcap writer")?;
+        let channels = register_topics(&mut writer);
+        write_static_transforms(&mut writer, &channels)?;
+        Ok(Self { writer, channels })
+    }
+
+    pub fn write_map_scene(&mut self, timestamp_us: u64, scene: &pb_fg::SceneUpdate) -> Result<()> {
+        self.write_scene(TelemetryTopic::MappingGlobalMapScene, timestamp_us, scene)
+    }
+
+    pub fn write_raceline_scene(
+        &mut self,
+        timestamp_us: u64,
+        scene: &pb_fg::SceneUpdate,
+    ) -> Result<()> {
+        self.write_scene(TelemetryTopic::PlanningRaceLineScene, timestamp_us, scene)
+    }
+
+    pub fn write_scene(
+        &mut self,
+        topic: TelemetryTopic,
+        timestamp_us: u64,
+        scene: &pb_fg::SceneUpdate,
+    ) -> Result<()> {
+        if !is_scene_topic(topic) {
+            bail!(
+                "telemetry topic {} is not a Foxglove scene topic",
+                topic.as_str()
+            );
+        }
+        write_scene(&mut self.writer, &self.channels, topic, timestamp_us, scene)
+    }
+
+    pub fn finish(mut self) -> Result<()> {
+        self.writer.finish()?;
+        Ok(())
     }
 }
 
@@ -183,6 +236,12 @@ const TOPICS: &[TopicSpec] = &[
         encoding: TopicEncoding::Json,
     },
     TopicSpec {
+        topic: TelemetryTopic::MappingGlobalMapScene,
+        encoding: TopicEncoding::FoxgloveProtobuf {
+            schema_name: "foxglove.SceneUpdate",
+        },
+    },
+    TopicSpec {
         topic: TelemetryTopic::MappingStatus,
         encoding: TopicEncoding::Json,
     },
@@ -201,6 +260,12 @@ const TOPICS: &[TopicSpec] = &[
     TopicSpec {
         topic: TelemetryTopic::PlanningRaceLine,
         encoding: TopicEncoding::Json,
+    },
+    TopicSpec {
+        topic: TelemetryTopic::PlanningRaceLineScene,
+        encoding: TopicEncoding::FoxgloveProtobuf {
+            schema_name: "foxglove.SceneUpdate",
+        },
     },
     TopicSpec {
         topic: TelemetryTopic::PlanningRaceReference,
@@ -253,6 +318,18 @@ const TOPICS: &[TopicSpec] = &[
         },
     },
 ];
+
+fn is_scene_topic(topic: TelemetryTopic) -> bool {
+    matches!(
+        topic,
+        TelemetryTopic::ControlScene
+            | TelemetryTopic::PerceptionReactiveScene
+            | TelemetryTopic::MappingGlobalMapScene
+            | TelemetryTopic::PlanningRaceLineScene
+            | TelemetryTopic::WorldWalls
+            | TelemetryTopic::SimGroundTruthFootprint
+    )
+}
 
 fn mcap_loop(mut file_writer: BufWriter<File>, rx: TelemetryReceiver, path: String) {
     let mut writer = Writer::new(&mut file_writer).expect("failed to init mcap writer");
@@ -514,13 +591,23 @@ fn write_mapping<W: std::io::Write + std::io::Seek>(
             e.timestamp_us,
             &e.kind,
         ),
-        MappingTelemetryKind::GlobalMapSnapshot(v) => write_json(
-            writer,
-            channels,
-            TelemetryTopic::MappingGlobalMapSnapshot,
-            e.timestamp_us,
-            v,
-        ),
+        MappingTelemetryKind::GlobalMapSnapshot(v) => {
+            write_json(
+                writer,
+                channels,
+                TelemetryTopic::MappingGlobalMapSnapshot,
+                e.timestamp_us,
+                v,
+            )?;
+            let scene = build_map_scene(e.timestamp_us, "map", v);
+            write_scene(
+                writer,
+                channels,
+                TelemetryTopic::MappingGlobalMapScene,
+                e.timestamp_us,
+                &scene,
+            )
+        }
         MappingTelemetryKind::LoopClosure(v) => write_json(
             writer,
             channels,
@@ -567,13 +654,23 @@ fn write_planning<W: std::io::Write + std::io::Seek>(
     e: &PlanningTelemetry,
 ) -> Result<()> {
     match &e.kind {
-        PlanningTelemetryKind::RaceLine(v) => write_json(
-            writer,
-            channels,
-            TelemetryTopic::PlanningRaceLine,
-            e.timestamp_us,
-            v,
-        ),
+        PlanningTelemetryKind::RaceLine(v) => {
+            write_json(
+                writer,
+                channels,
+                TelemetryTopic::PlanningRaceLine,
+                e.timestamp_us,
+                v,
+            )?;
+            let scene = build_raceline_scene(e.timestamp_us, "map", v);
+            write_scene(
+                writer,
+                channels,
+                TelemetryTopic::PlanningRaceLineScene,
+                e.timestamp_us,
+                &scene,
+            )
+        }
         PlanningTelemetryKind::RaceReference(v) => write_json(
             writer,
             channels,
@@ -983,40 +1080,8 @@ fn write_world_walls<W: std::io::Write + std::io::Seek>(
     channels: &HashMap<&'static str, u16>,
     world: &nfe_core::telemetry::WorldSnapshotTelemetry,
 ) -> Result<()> {
-    let mut entity = pb_fg::SceneEntity {
-        id: "world_walls".to_string(),
-        timestamp: Some(timestamp(world.timestamp_us)),
-        frame_id: world.frame_id.clone(),
-        frame_locked: 1,
-        lines: Vec::new(),
-        arrows: Vec::new(),
-        spheres: Vec::new(),
-    };
-    for wall in &world.walls {
-        let color = match wall.kind {
-            WallKind::Inner => color(0.1, 0.8, 1.0, 1.0),
-            WallKind::Outer => color(1.0, 0.5, 0.1, 1.0),
-            WallKind::Unknown => color(0.8, 0.8, 0.8, 1.0),
-        };
-        entity.lines.push(pb_fg::LinePrimitive {
-            r#type: 0,
-            pose: Some(pose(nfe_core::Pose2::default())),
-            thickness: 0.02,
-            scale_invariant_thickness: 0.0,
-            color: Some(color),
-            points: vec![
-                vector(wall.p0.x, wall.p0.y, 0.0),
-                vector(wall.p1.x, wall.p1.y, 0.0),
-            ],
-            colors: Vec::new(),
-            indices: Vec::new(),
-        });
-    }
-    let msg = pb_fg::SceneUpdate {
-        entities: vec![entity],
-        deletions: Vec::new(),
-    };
-    write_protobuf(
+    let msg = build_world_walls_scene(world);
+    write_scene(
         writer,
         channels,
         TelemetryTopic::WorldWalls,
@@ -1110,6 +1175,16 @@ fn write_protobuf<W: std::io::Write + std::io::Seek, T: Message>(
 ) -> Result<()> {
     let payload = value.encode_to_vec();
     write_raw(writer, channels, topic, timestamp_us, &payload)
+}
+
+fn write_scene<W: std::io::Write + std::io::Seek>(
+    writer: &mut Writer<W>,
+    channels: &HashMap<&'static str, u16>,
+    topic: TelemetryTopic,
+    timestamp_us: u64,
+    value: &pb_fg::SceneUpdate,
+) -> Result<()> {
+    write_protobuf(writer, channels, topic, timestamp_us, value)
 }
 
 fn write_raw<W: std::io::Write + std::io::Seek>(

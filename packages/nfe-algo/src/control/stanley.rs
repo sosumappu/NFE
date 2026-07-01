@@ -48,7 +48,6 @@ mod tests {
         let stanley = Stanley::new(StanleyParams::default());
         let out1 = stanley.compute(1.0, 0.3, 0.3);
         let out2 = stanley.compute(5.0, 0.3, 0.3);
-        println!("{} out1, {} out2", out1, out2);
         assert!(out1 >= out2);
     }
 

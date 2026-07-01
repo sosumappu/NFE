@@ -11,7 +11,7 @@ use nfe_core::{
 };
 use nfe_runtime::{
     config::RuntimeConfig,
-    pipeline::{EstimatorMode, Pipeline},
+    pipeline::Pipeline,
     start_gate::{ArmSignalConfig, StartGateConfig, StartGateMode, StartGateRuntime},
     telemetry_bus::TelemetryBus,
 };
@@ -112,7 +112,7 @@ pub async fn run(
         return Ok(());
     }
 
-    let mut pipeline = Pipeline::new(runtime_config_from_car(config), EstimatorMode::DeadReckon);
+    let mut pipeline = Pipeline::new(runtime_config_from_car(config));
     pipeline.set_telemetry(bus.clone());
     pipeline.reset(Pose2::default(), 0);
 
@@ -194,7 +194,8 @@ pub async fn run(
         let mut watchdog_miss = false;
         let mut skip_normal_actuation = false;
 
-        let (gate_decision, gate_telemetry) = gate.observe_tick(ts, false, true)?;
+        let (gate_decision, gate_telemetry) =
+            gate.observe_tick(ts, snap.start_line_crossed, true)?;
         if let Some(event) = gate_telemetry {
             pipeline.publish_event(TelemetryEvent::StartGate(event));
         }
@@ -433,6 +434,7 @@ fn runtime_config_from_car(config: &Config) -> RuntimeConfig {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
 
@@ -459,6 +461,30 @@ mod tests {
         config.control.speed.a_lat_max_ms2 = 3.7;
         config.control.speed.accel_limit_ms2 = 1.2;
         config.control.speed.decel_limit_ms2 = 4.5;
+        config.mapping.enabled = true;
+        config.mapping.queue_capacity = 7;
+        config.algo = serde_json::json!({
+            "mapper": { "submap_translation_m": 0.75 },
+            "particle": { "resample_ess_fraction": 0.8 },
+            "raceline_solver": {
+                "clearance_m": 0.12,
+                "max_iterations": 17,
+                "max_adjacent_offset_slope": 0.04
+            },
+            "raceline_controller": {
+                "lateral": {
+                    "natural_frequency_rad_s": 2.4,
+                    "damping_ratio": 0.7
+                },
+                "steering": {
+                    "wheelbase_m": 0.25,
+                    "max_steering_rad": 0.6
+                },
+                "longitudinal": {
+                    "k_speed_ms2_per_ms": 5.0
+                }
+            }
+        });
 
         let runtime = runtime_config_from_car(&config);
 
@@ -485,6 +511,50 @@ mod tests {
         assert_eq!(runtime.algo.reactive.speed.a_lat_max_ms2, 3.7);
         assert_eq!(runtime.algo.reactive.speed.accel_limit_ms2, 1.2);
         assert_eq!(runtime.algo.reactive.speed.decel_limit_ms2, 4.5);
+        assert!(runtime.mapping.enabled);
+        assert_eq!(runtime.mapping.queue_capacity, 7);
+        assert_eq!(runtime.algo.mapper.submap_translation_m, 0.75);
+        assert_eq!(runtime.algo.particle.resample_ess_fraction, 0.8);
+        assert_eq!(runtime.algo.raceline_solver.clearance_m, 0.12);
+        assert_eq!(runtime.algo.raceline_solver.max_iterations, 17);
+        assert_eq!(runtime.algo.raceline_solver.max_adjacent_offset_slope, 0.04);
+        assert_eq!(runtime.algo.raceline_controller.steering.wheelbase_m, 0.25);
+        assert_eq!(
+            runtime.algo.raceline_controller.steering.max_steering_rad,
+            0.6
+        );
+        assert_eq!(
+            runtime
+                .algo
+                .raceline_controller
+                .lateral
+                .natural_frequency_rad_s,
+            2.4
+        );
+        assert_eq!(runtime.algo.raceline_controller.lateral.damping_ratio, 0.7);
+        assert_eq!(
+            runtime
+                .algo
+                .raceline_controller
+                .longitudinal
+                .k_speed_ms2_per_ms,
+            5.0
+        );
+    }
+
+    #[test]
+    fn to_runtime_snapshot_preserves_start_line_edge() {
+        let snapshot = crate::state::SensorSnapshot {
+            lidar: Arc::new(crate::types::LidarCloud::default()),
+            imu: crate::types::ImuSample::default(),
+            sonar_m: [f32::MAX; 3],
+            sensor_fault: false,
+            start_line_crossed: true,
+        };
+
+        let runtime = to_runtime_snapshot(&snapshot);
+
+        assert!(runtime.start_line_crossed);
     }
 }
 
@@ -518,7 +588,7 @@ fn to_runtime_snapshot(
         },
         sensor_fault: snapshot.sensor_fault,
         sonar_m: snapshot.sonar_m,
-        start_line_crossed: false,
+        start_line_crossed: snapshot.start_line_crossed,
     }
 }
 

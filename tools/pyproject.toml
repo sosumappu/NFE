@@ -20,6 +20,7 @@ dependencies = [
 [project.scripts]
 nfe-tune-optuna = "nfe_tools.optuna_tuner:main"
 nfe-plot-optuna = "nfe_tools.optuna_plot:main"
+nfe-bench-analyze = "nfe_tools.bench_analyze:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/nfe_tools"]

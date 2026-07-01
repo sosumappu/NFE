@@ -9,29 +9,29 @@ estop_dist_m = 0.30
 lqr = [0.80, 0.30, 1.20, 0.40]
 
 [control.speed]
-v_max = 2.0
-v_min = 0.35
+v_max = 8.290801
+v_min = 4.165449
 # greater = less speed as lateral target error grows
-k_lateral = 4.0
+k_lateral = 0.69633275
 # greater = less speed as heading target error grows
-k_heading = 5.0
-obstacle_slowdown_m = 2.5
+k_heading = 11.426561
+obstacle_slowdown_m = 2.488612
 # lateral acceleration cap used by curvature speed limiting
-a_lat_max_ms2 = 3.0
-accel_limit_ms2 = 1.5
-decel_limit_ms2 = 5.0
+a_lat_max_ms2 = 1.607802
+accel_limit_ms2 = 5.950695
+decel_limit_ms2 = 14.709466
 
 [control.pid]
-kp = 2.5           # proportional factor
-ki = 0.20          # integral factor
-kd = 0.05          # derivative factor
-windup_limit = 0.5
-max_throttle = 1.0 # WARN: put pid to 0.2 on live tests
+kp = 18.094048            # proportional factor
+ki = 7.80782              # integral factor
+kd = 1.0906962            # derivative factor
+windup_limit = 6.943934
+max_throttle = 0.16335747 # WARN: put pid to 0.2 on live tests
 
 [control.stanley]
-k_cross_track = 2.5
-softening_speed_ms = 0.8
-max_steering_rad = 0.66
+k_cross_track = 3.0346534
+softening_speed_ms = 16.028975
+max_steering_rad = 0.3382161
 
 [control.perception]
 mode = "apex"
@@ -45,20 +45,123 @@ min_pair_sep_m = 0.1
 
 [control.perception.apex]
 median_window = 13
-min_points = 8
-min_forward_m = 0.12
-min_range_jump_m = 0.13
-max_opposite_dist_error_m = 0.28
-prefer_nearer_opposite = false
-wall_clearance_m = 0.63
-apex_switch_threshold_rad = 0.06
-apex_switch_hysteresis_factor = 5.0
-max_lookahead_m = 2.2
-min_lookahead_m = 1.4
-lookahead_sensitivity = 4.9
-side_lookahead_fov_deg = 80.0
-side_lookahead_center_deg = 93.0
-apex_lookahead_weight = 0.9
+min_points = 58
+min_forward_m = 0.18077002
+min_range_jump_m = 0.4931938
+max_opposite_dist_error_m = 0.1701271
+prefer_nearer_opposite = true
+wall_clearance_m = 0.8976432
+apex_switch_threshold_rad = 0.18686086
+apex_switch_hysteresis_factor = 2.783196
+max_lookahead_m = 4.020228
+min_lookahead_m = 3.1337237
+lookahead_sensitivity = 1.3938466
+side_lookahead_fov_deg = 72.03537
+side_lookahead_center_deg = 93.22988
+apex_lookahead_weight = 0.46880704
+
+[mapping]
+enabled = false
+queue_capacity = 4
+
+[algo.mapper]
+resolution_m = 0.05
+width_m = 12.0
+height_m = 12.0
+origin_x_m = -6.0
+origin_y_m = -6.0
+log_odds_occupied = 0.85
+log_odds_free = 0.35
+log_odds_limit = 4.0
+max_range_m = 6.0
+distance_field_truncation_m = 1.0
+submap_translation_m = 1.0
+submap_yaw_rad = 0.35
+loop_closure_radius_m = 0.35
+loop_closure_residual_good_m = 0.15
+loop_closure_overlap_good = 0.45
+
+[algo.correlative]
+search_window_xy_m = 0.25
+search_window_yaw_rad = 0.25
+coarse_xy_step_m = 0.05
+coarse_yaw_step_rad = 0.05
+fine_xy_step_m = 0.01
+fine_yaw_step_rad = 0.01
+min_points = 12
+score_sigma_m = 0.12
+min_confidence = 0.25
+top_coarse_candidates = 16
+
+[algo.particle]
+particles = 96
+sigma_xy_m = 0.20
+sigma_yaw_rad = 0.15
+max_points_scored = 24
+score_sigma_m = 0.25
+resample_ess_fraction = 0.5
+recovery_fraction = 0.15
+min_confidence = 0.15
+
+[algo.raceline_solver]
+# Legacy BoundarySet fallback only; occupancy grids are the primary path.
+bin_width_m = 0.20
+smoothing_passes = 2
+# Offline velocity-profile limits. The top speed comes from a full-throttle
+# dynamic-model free-run with this file's drivetrain/drag parameters; the accel
+# limits are conservative fractions of the dynamic model envelope (`mu = 1.2`,
+# `accel_max_ms2 = 20`). `curvature_slowdown` remains for fallback.
+v_max_ms = 6.32
+curvature_slowdown = 1.0
+velocity_lateral_accel_limit_ms2 = 8.0
+velocity_accel_limit_ms2 = 4.0
+velocity_brake_limit_ms2 = 8.0
+velocity_curvature_epsilon_m_inv = 0.0001
+velocity_closed_passes = 8
+# Occupancy/reference extraction.
+occupancy_morph_radius_cells = 1
+reference_savgol_window_points = 7
+reference_savgol_polynomial_order = 3
+width_step_m = 0.0
+max_width_m = 5.0
+# Min-curvature QP bounds/objective.
+clearance_m = 0.05
+max_curvature_m_inv = 0.0
+regularization_weight_m_inv4 = 0.0001
+max_adjacent_offset_slope = 0.05
+# Linearization/convergence controls. These are validated starting points, not
+# derived vehicle constants.
+max_iterations = 30
+convergence_tolerance_m_inv = 0.005
+damping_first = 0.1
+damping_second = 0.1
+damping_later = 0.1
+
+[algo.raceline_controller.lateral]
+# Starting-point second-order lateral dynamics; retune on real controller tests.
+natural_frequency_rad_s = 2.0
+damping_ratio = 0.53
+# Lateral feedback fades in below this speed and is fully active at/above it.
+min_speed_ms = 0.5
+max_feedback_accel_ms2 = 8.0
+max_curvature_command_m_inv = 20.0
+
+[algo.raceline_controller.steering]
+wheelbase_m = 0.21
+yaw_rate_p_gain_s = 0.08
+min_feedback_speed_ms = 0.5
+max_steering_rad = 0.70
+
+[algo.raceline_controller.longitudinal]
+mass_kg = 1.52
+motor_gain_ms2 = 20.0
+brake_gain = 1.4
+drag_k = 0.5
+k_speed_ms2_per_ms = 4.0
+max_accel_ms2 = 12.0
+max_brake_ms2 = 16.0
+motor_deadband = 0.05
+max_throttle = 1.0
 
 [live]
 lidar_port = "/dev/lidar"

@@ -15,10 +15,7 @@ impl ApexScan {
         max_lookahead_m: f32,
         median_window: usize,
     ) -> Self {
-        let cloud = cloud
-            .crop_to_front_arc(FRONT_FOV_RAD)
-            .crop_distance(min_forward_m, max_lookahead_m)
-            .median_filtered(median_window);
+        let cloud = preprocess_cloud(cloud, min_forward_m, max_lookahead_m, median_window);
 
         Self { cloud }
     }
@@ -45,9 +42,9 @@ impl ApexScan {
             .min_by(|(_, a), (_, b)| closest_range_m(a).total_cmp(&closest_range_m(b)))
             .or_else(|| {
                 windows.max_by(|(_, a), (_, b)| {
-                    a[1].derivative(&a[0])
+                    range_derivative(&a[1], &a[0])
                         .abs()
-                        .total_cmp(&b[1].derivative(&b[0]).abs())
+                        .total_cmp(&range_derivative(&b[1], &b[0]).abs())
                 })
             })?;
 
@@ -71,7 +68,7 @@ impl ApexScan {
         let mut derivative_score = 0.0;
         let mut range_jump_m = 0.0;
         for pair in self.cloud.points.windows(2) {
-            let derivative = pair[1].derivative(&pair[0]).abs();
+            let derivative = range_derivative(&pair[1], &pair[0]).abs();
             if derivative > derivative_score {
                 derivative_score = derivative;
                 range_jump_m = pair_range_jump_m(pair);
@@ -164,8 +161,7 @@ pub(super) struct HermiteBounds<'a> {
 }
 
 pub(super) fn nearest_front_obstacle_m(cloud: &LidarCloud) -> f32 {
-    cloud
-        .nearest_in_arc(0.0, PI / 12.0)
+    nearest_in_arc(cloud, 0.0, PI / 12.0)
         .map(|p| p.dist_m)
         .unwrap_or(f32::INFINITY)
 }
@@ -176,6 +172,85 @@ pub(super) fn nearest_obstacle_m(cloud: &LidarCloud) -> f32 {
         .iter()
         .map(|p| p.dist_m)
         .fold(f32::MAX, f32::min)
+}
+
+pub(super) fn nearest_in_arc(
+    cloud: &LidarCloud,
+    center_angle_rad: f32,
+    fov_rad: f32,
+) -> Option<&LidarPoint> {
+    let half_fov = fov_rad / 2.0;
+    cloud
+        .points
+        .iter()
+        .filter(|p| angle_diff_rad(p.angle_rad, center_angle_rad).abs() <= half_fov)
+        .min_by(|a, b| a.dist_m.total_cmp(&b.dist_m))
+}
+
+pub(super) fn angle_diff_rad(lhs: f32, rhs: f32) -> f32 {
+    (lhs - rhs + PI).rem_euclid(std::f32::consts::TAU) - PI
+}
+
+fn preprocess_cloud(
+    cloud: &LidarCloud,
+    min_dist_m: f32,
+    max_dist_m: f32,
+    median_window: usize,
+) -> LidarCloud {
+    let half_front_fov = FRONT_FOV_RAD / 2.0;
+    let points: Vec<_> = cloud
+        .points
+        .iter()
+        .copied()
+        .filter(|p| p.angle_rad.abs() <= half_front_fov)
+        .filter(|p| (min_dist_m..=max_dist_m).contains(&p.dist_m))
+        .collect();
+    median_filtered(points, cloud.timestamp_us, median_window)
+}
+
+fn median_filtered(points: Vec<LidarPoint>, timestamp_us: u64, window: usize) -> LidarCloud {
+    let n = points.len();
+    if n == 0 {
+        return LidarCloud {
+            points,
+            timestamp_us,
+        };
+    }
+
+    let window = window.clamp(1, 256).min(n);
+    let half_width = window / 2;
+    let mut out = Vec::with_capacity(n);
+    let mut scratch = [0.0f32; 256];
+
+    for i in 0..n {
+        for (j, slot) in scratch.iter_mut().take(window).enumerate() {
+            let idx = (i + n + j - half_width) % n;
+            *slot = points[idx].dist_m;
+        }
+        let mid = window / 2;
+        let median_dist = *scratch[..window]
+            .select_nth_unstable_by(mid, |a, b| a.total_cmp(b))
+            .1;
+        out.push(LidarPoint::from_polar(
+            median_dist,
+            points[i].angle_rad,
+            points[i].timestamp_us,
+        ));
+    }
+
+    LidarCloud {
+        points: out,
+        timestamp_us,
+    }
+}
+
+fn range_derivative(lhs: &LidarPoint, rhs: &LidarPoint) -> f32 {
+    let d_theta = angle_diff_rad(lhs.angle_rad, rhs.angle_rad);
+    if d_theta.abs() < f32::EPSILON {
+        0.0
+    } else {
+        (lhs.dist_m - rhs.dist_m) / d_theta
+    }
 }
 
 fn pair_range_jump_m(pair: &[LidarPoint]) -> f32 {

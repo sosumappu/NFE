@@ -47,17 +47,11 @@ const SONAR_DIRECTIONS: [f32; 3] = [0.0, 0.52, -0.52]; // front, front-left, fro
 
 type CmdCell = Arc<Mutex<ControlCommand>>;
 
-#[derive(Clone, Copy, Debug, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Copy, Debug, Default, serde::Deserialize, serde::Serialize)]
 #[serde(default)]
 pub struct LatencyParams {
     /// Delay between command publication and model application.
     pub latency_us: u64,
-}
-
-impl Default for LatencyParams {
-    fn default() -> Self {
-        Self { latency_us: 0 }
-    }
 }
 
 #[derive(Debug)]

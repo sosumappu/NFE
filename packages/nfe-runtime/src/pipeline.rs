@@ -1,15 +1,16 @@
 use nfe_algo::control::reactive_stanley::ReactiveStanleyController;
-use nfe_algo::estimation::dead_reckon::DeadReckonEstimator;
 use nfe_algo::estimation::ekf::Ekf;
+use nfe_algo::localization::correlative::CorrelativeLocalizer;
 use nfe_algo::localization::particle::ParticleLocalizer;
-use nfe_algo::localization::scan_match::ScanMatchLocalizer;
 use nfe_algo::perception::apex::{ApexCorridorPerception, ApexPerception};
 use nfe_algo::perception::corridor::{CorridorPerception, RansacCorridorPerception};
 use nfe_algo::perception::{ApexObservation, PerceptionObserver, RansacWallsObservation};
 use nfe_algo::raceline::controller::RaceLineController;
-use nfe_algo::raceline::solver::solve_min_curvature;
+use nfe_algo::raceline::solver::RaceLineError;
 use nfe_algo::supervisor::{HealthReport, LoopClosureStatus, RaceSupervisor};
-use nfe_core::control::{ControlInput, ControlOutput, Controller, CorridorEstimate};
+use nfe_core::control::{
+    ControlInput, ControlOutput, Controller, ControllerStatus, CorridorEstimate,
+};
 use nfe_core::estimation::{StateEstimate, StateEstimator};
 use nfe_core::localization::{LocalizationResult, Localizer};
 use nfe_core::mapping::{MapStatus, MapperClient, MappingInput, TrackMap};
@@ -27,13 +28,8 @@ use nfe_core::{wrap_angle, Point2, Pose2, WallLine};
 
 use crate::config::RuntimeConfig;
 use crate::mapping_worker::MappingWorker;
+use crate::raceline_worker::{RaceLinePlannerEvent, RaceLinePlannerSubmit, RaceLinePlannerWorker};
 use crate::telemetry_bus::TelemetryBus;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum EstimatorMode {
-    DeadReckon,
-    Ekf,
-}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -123,37 +119,232 @@ impl PerceptionObserver for RuntimePerceptionObserver {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PlannerPolicy {
+    max_consecutive_failures: u32,
+    max_outdated_ticks: u32,
+    max_revision_lag: u64,
+}
+
+impl PlannerPolicy {
+    fn for_hz(hz: u64) -> Self {
+        Self {
+            max_consecutive_failures: 3,
+            max_outdated_ticks: hz.clamp(1, u32::MAX as u64) as u32,
+            max_revision_lag: 10,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum PlannerAvailability {
+    NoLine,
+    Fresh,
+    UsableStale {
+        revision_lag: u64,
+        outdated_ticks: u32,
+        consecutive_failures: u32,
+    },
+    UnusableStale {
+        reason: StaleReason,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StaleReason {
+    SolverFailedWithoutPrevious,
+    TooManyFailures,
+    TooOldInTicks,
+    MapRevisionLagTooLarge,
+    /// Detects backward/reset revisions. Equal revision numbers with different
+    /// map contents require a future map-session identifier to distinguish.
+    MapRevisionInconsistent,
+}
+
+#[derive(Clone, Debug)]
+struct PlannerState {
+    line: Option<RaceLine>,
+    source_map_revision: Option<u64>,
+    availability: PlannerAvailability,
+    last_attempted_map_revision: Option<u64>,
+    last_failed_map_revision: Option<u64>,
+    last_error: Option<RaceLineError>,
+    consecutive_failures: u32,
+    outdated_ticks: u32,
+    policy: PlannerPolicy,
+}
+
+impl PlannerState {
+    fn new(policy: PlannerPolicy) -> Self {
+        Self {
+            line: None,
+            source_map_revision: None,
+            availability: PlannerAvailability::NoLine,
+            last_attempted_map_revision: None,
+            last_failed_map_revision: None,
+            last_error: None,
+            consecutive_failures: 0,
+            outdated_ticks: 0,
+            policy,
+        }
+    }
+
+    fn usable_line(&self) -> Option<&RaceLine> {
+        if !matches!(
+            self.availability,
+            PlannerAvailability::Fresh | PlannerAvailability::UsableStale { .. }
+        ) {
+            return None;
+        }
+        self.line.as_ref().filter(|line| !line.points.is_empty())
+    }
+
+    fn should_attempt(&self, map_revision: u64) -> bool {
+        self.source_map_revision != Some(map_revision)
+            && self.last_attempted_map_revision != Some(map_revision)
+    }
+
+    fn record_attempt_started(&mut self, map_revision: u64) {
+        self.last_attempted_map_revision = Some(
+            self.last_attempted_map_revision
+                .map_or(map_revision, |last| last.max(map_revision)),
+        );
+    }
+
+    fn advance_for_map_revision(&mut self, map_revision: u64) {
+        let Some(source_revision) = self.source_map_revision else {
+            return;
+        };
+        if map_revision < source_revision {
+            self.line = None;
+            self.source_map_revision = None;
+            self.outdated_ticks = 0;
+            self.availability = PlannerAvailability::UnusableStale {
+                reason: StaleReason::MapRevisionInconsistent,
+            };
+            return;
+        }
+        if map_revision == source_revision {
+            self.outdated_ticks = 0;
+            if self
+                .line
+                .as_ref()
+                .is_some_and(|line| !line.points.is_empty())
+            {
+                self.availability = PlannerAvailability::Fresh;
+            }
+            return;
+        }
+
+        self.outdated_ticks = self.outdated_ticks.saturating_add(1);
+        self.evaluate_stale_policy(map_revision);
+    }
+
+    fn record_success(&mut self, line: RaceLine, map_revision: u64) {
+        self.line = Some(line);
+        self.source_map_revision = Some(map_revision);
+        self.availability = PlannerAvailability::Fresh;
+        self.record_attempt_started(map_revision);
+        self.last_failed_map_revision = None;
+        self.last_error = None;
+        self.consecutive_failures = 0;
+        self.outdated_ticks = 0;
+    }
+
+    fn record_failure(&mut self, map_revision: u64, error: RaceLineError) {
+        self.record_attempt_started(map_revision);
+        self.last_failed_map_revision = Some(map_revision);
+        self.last_error = Some(error);
+        self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+
+        if self.line.is_none() || self.source_map_revision.is_none() {
+            self.availability = PlannerAvailability::UnusableStale {
+                reason: StaleReason::SolverFailedWithoutPrevious,
+            };
+            return;
+        }
+
+        self.evaluate_stale_policy(map_revision);
+    }
+
+    fn evaluate_stale_policy(&mut self, map_revision: u64) {
+        let Some(source_revision) = self.source_map_revision else {
+            self.availability = PlannerAvailability::NoLine;
+            return;
+        };
+        if map_revision < source_revision {
+            self.line = None;
+            self.source_map_revision = None;
+            self.outdated_ticks = 0;
+            self.availability = PlannerAvailability::UnusableStale {
+                reason: StaleReason::MapRevisionInconsistent,
+            };
+            return;
+        }
+        let revision_lag = map_revision - source_revision;
+        if revision_lag == 0 {
+            self.availability = PlannerAvailability::Fresh;
+            return;
+        }
+        if self.consecutive_failures > self.policy.max_consecutive_failures {
+            self.availability = PlannerAvailability::UnusableStale {
+                reason: StaleReason::TooManyFailures,
+            };
+            return;
+        }
+        if self.outdated_ticks > self.policy.max_outdated_ticks {
+            self.availability = PlannerAvailability::UnusableStale {
+                reason: StaleReason::TooOldInTicks,
+            };
+            return;
+        }
+        if revision_lag > self.policy.max_revision_lag {
+            self.availability = PlannerAvailability::UnusableStale {
+                reason: StaleReason::MapRevisionLagTooLarge,
+            };
+            return;
+        }
+        self.availability = PlannerAvailability::UsableStale {
+            revision_lag,
+            outdated_ticks: self.outdated_ticks,
+            consecutive_failures: self.consecutive_failures,
+        };
+    }
+}
+
 pub struct Pipeline {
     cfg: RuntimeConfig,
     telemetry: Option<TelemetryBus>,
     perception_observer: RuntimePerceptionObserver,
     tick: u64,
     last_mode: Option<nfe_algo::supervisor::DriveMode>,
+    last_slam_lidar_timestamp_us: Option<u64>,
     last_map_revision_published: Option<u64>,
     last_raceline_revision_published: Option<u64>,
-    estimator_mode: EstimatorMode,
-    dead_reckon: DeadReckonEstimator,
+    last_localization_confidence: Option<f32>,
     ekf: Ekf,
     corridor_perception: RansacCorridorPerception,
     apex_perception: ApexCorridorPerception,
     mapper: MappingWorker,
-    scan_match: ScanMatchLocalizer,
+    correlative: CorrelativeLocalizer,
     particle: ParticleLocalizer,
     supervisor: RaceSupervisor,
     reactive: ReactiveStanleyController,
     raceline_controller: RaceLineController,
-    raceline: Option<RaceLine>,
+    raceline_worker: RaceLinePlannerWorker,
+    planner: PlannerState,
 }
 
 impl Pipeline {
-    pub fn new(cfg: RuntimeConfig, estimator_mode: EstimatorMode) -> Self {
+    pub fn new(cfg: RuntimeConfig) -> Self {
         let mapper = if cfg.mapping.enabled {
             MappingWorker::start(cfg.algo.mapper.clone(), cfg.mapping.queue_capacity, 0xA11CE)
         } else {
             MappingWorker::disabled()
         };
+        let planner = PlannerState::new(PlannerPolicy::for_hz(cfg.hz));
+        let raceline_worker = RaceLinePlannerWorker::start(cfg.algo.raceline_solver.clone());
         Self {
-            dead_reckon: DeadReckonEstimator::new(),
             ekf: Ekf::new(cfg.algo.ekf.clone()),
             corridor_perception: RansacCorridorPerception::new(
                 cfg.algo.perception.clone(),
@@ -161,20 +352,22 @@ impl Pipeline {
             ),
             apex_perception: ApexCorridorPerception::new(cfg.algo.apex.clone()),
             mapper,
-            scan_match: ScanMatchLocalizer::new(cfg.algo.scan_match.clone(), 0x0515_CA11),
+            correlative: CorrelativeLocalizer::new(cfg.algo.correlative.clone()),
             particle: ParticleLocalizer::new(cfg.algo.particle.clone(), 0x9EED),
             supervisor: RaceSupervisor::new(cfg.algo.supervisor.clone()),
             reactive: ReactiveStanleyController::new(cfg.algo.reactive.clone()),
             raceline_controller: RaceLineController::new(cfg.algo.raceline_controller.clone()),
-            raceline: None,
+            raceline_worker,
+            planner,
             cfg,
             telemetry: None,
             perception_observer: RuntimePerceptionObserver::default(),
             tick: 0,
             last_mode: None,
+            last_slam_lidar_timestamp_us: None,
             last_map_revision_published: None,
             last_raceline_revision_published: None,
-            estimator_mode,
+            last_localization_confidence: None,
         }
     }
 
@@ -188,17 +381,20 @@ impl Pipeline {
     }
 
     pub fn reset(&mut self, pose: Pose2, timestamp_us: u64) {
-        self.dead_reckon.reset(pose, timestamp_us);
         self.ekf.reset(pose, timestamp_us);
         self.supervisor = RaceSupervisor::new(self.cfg.algo.supervisor.clone());
         self.apex_perception.reset();
         self.reactive.reset();
         self.raceline_controller.reset();
-        self.raceline = None;
+        self.raceline_worker.shutdown();
+        self.raceline_worker = RaceLinePlannerWorker::start(self.cfg.algo.raceline_solver.clone());
+        self.planner = PlannerState::new(PlannerPolicy::for_hz(self.cfg.hz));
         self.tick = 0;
         self.last_mode = None;
+        self.last_slam_lidar_timestamp_us = None;
         self.last_map_revision_published = None;
         self.last_raceline_revision_published = None;
+        self.last_localization_confidence = None;
         self.perception_observer.begin_step(false);
     }
 
@@ -210,7 +406,7 @@ impl Pipeline {
 
         let corridor = match self.cfg.perception_mode {
             PerceptionMode::Corridor => {
-                let points = snapshot.lidar.as_points2();
+                let points: Vec<_> = snapshot.lidar.points.iter().map(|p| p.point2()).collect();
                 self.corridor_perception.estimate_observed(
                     &points,
                     snapshot.lidar.timestamp_us,
@@ -224,12 +420,16 @@ impl Pipeline {
             ),
         };
 
-        if self.cfg.mapping.enabled {
-            let _ = self.mapper.submit(MappingInput {
-                cloud: snapshot.lidar.clone(),
-                pose: estimate.pose,
-                timestamp_us: snapshot.lidar.timestamp_us,
-            });
+        let new_lidar_scan = self.last_slam_lidar_timestamp_us != Some(snapshot.lidar.timestamp_us);
+        if new_lidar_scan {
+            self.last_slam_lidar_timestamp_us = Some(snapshot.lidar.timestamp_us);
+            if self.cfg.mapping.enabled {
+                let _ = self.mapper.submit(MappingInput {
+                    cloud: snapshot.lidar.clone(),
+                    pose: estimate.pose,
+                    timestamp_us: snapshot.lidar.timestamp_us,
+                });
+            }
         }
         if snapshot.start_line_crossed {
             self.mapper.mark_lap_complete();
@@ -237,38 +437,49 @@ impl Pipeline {
 
         let latest_map = self.mapper.latest_map();
         let mut localization = LocalizationResult::default();
+        if new_lidar_scan {
+            if let Some(map) = latest_map.as_ref().filter(|m| m.complete) {
+                localization = self
+                    .correlative
+                    .localize(&snapshot.lidar, estimate.pose, map);
+                if localization.confidence < self.cfg.algo.supervisor.min_localization_confidence {
+                    localization = self.particle.localize(&snapshot.lidar, estimate.pose, map);
+                }
+                self.last_localization_confidence = Some(localization.confidence);
+                if let Some(meas) = localization.measurement {
+                    self.correct_pose(meas);
+                    estimate = self.estimate();
+                }
+            }
+        }
+        self.drain_raceline_worker_events();
         if let Some(map) = latest_map.as_ref().filter(|m| m.complete) {
-            localization = self
-                .scan_match
-                .localize(&snapshot.lidar, estimate.pose, map);
-            if localization.confidence < self.cfg.algo.supervisor.min_localization_confidence {
-                localization = self.particle.localize(&snapshot.lidar, estimate.pose, map);
-            }
-            if let Some(meas) = localization.measurement {
-                self.correct_pose(meas);
-                estimate = self.estimate();
-            }
             self.ensure_raceline(map);
         }
 
         let status = self.mapper.latest_status();
+        let localization_health_confidence = latest_map
+            .as_ref()
+            .filter(|m| m.complete)
+            .and(self.last_localization_confidence)
+            .map_or(estimate.confidence, |loc| loc.min(estimate.confidence));
         let health = HealthReport {
-            localization_confidence: estimate.confidence.max(localization.confidence),
+            localization_confidence: localization_health_confidence,
             loop_closure: LoopClosureStatus {
                 detected: status.loop_closure.detected,
                 residual_m: status.loop_closure.residual_m,
                 overlap: status.loop_closure.overlap,
             },
             estimator_diverged: estimate.diverged || snapshot.sensor_fault,
-            raceline_ready: self.raceline.is_some(),
+            raceline_ready: self.planner.usable_line().is_some(),
             mapping_enabled: self.cfg.mapping.enabled,
             start_line_crossed: snapshot.start_line_crossed,
         };
-        let mode = self.supervisor.step(&health);
+        let requested_mode = self.supervisor.step(&health);
 
         let reference = self
-            .raceline
-            .as_ref()
+            .planner
+            .usable_line()
             .and_then(|r| reference_for_pose(r, estimate.pose));
         let input = ControlInput {
             dt_s: self.cfg.dt_s(),
@@ -278,13 +489,25 @@ impl Pipeline {
             corridor: Some(&corridor),
             race_reference: reference.as_ref(),
         };
-        let command = match mode {
-            nfe_algo::supervisor::DriveMode::Reactive => self.reactive.compute(&input),
-            nfe_algo::supervisor::DriveMode::RaceLine => self.raceline_controller.compute(&input),
+        let (mode, command) = match requested_mode {
+            nfe_algo::supervisor::DriveMode::Reactive => {
+                (requested_mode, self.reactive.compute(&input))
+            }
+            nfe_algo::supervisor::DriveMode::RaceLine => {
+                let command = self.raceline_controller.compute(&input);
+                if command.status == ControllerStatus::Unavailable {
+                    (
+                        nfe_algo::supervisor::DriveMode::Reactive,
+                        self.reactive.compute(&input),
+                    )
+                } else {
+                    (requested_mode, command)
+                }
+            }
         };
 
         let map_revision = latest_map.as_ref().map(|m| m.revision);
-        let raceline_revision = self.raceline.as_ref().map(|r| r.revision);
+        let raceline_revision = self.planner.usable_line().map(|r| r.revision);
         self.publish_step_telemetry(
             &snapshot,
             &corridor,
@@ -391,7 +614,7 @@ impl Pipeline {
                 kind: PlanningTelemetryKind::RaceReference(*reference),
             }));
         }
-        if let Some(raceline) = &self.raceline {
+        if let Some(raceline) = self.planner.usable_line() {
             if self.last_raceline_revision_published != Some(raceline.revision) {
                 self.last_raceline_revision_published = Some(raceline.revision);
                 bus.publish(TelemetryEvent::Planning(PlanningTelemetry {
@@ -467,39 +690,43 @@ impl Pipeline {
     }
 
     fn predict(&mut self, imu: nfe_core::estimation::ImuSample) {
-        match self.estimator_mode {
-            EstimatorMode::DeadReckon => self.dead_reckon.predict_imu(imu),
-            EstimatorMode::Ekf => self.ekf.predict_imu(imu),
-        }
+        self.ekf.predict_imu(imu);
     }
 
     fn correct_pose(&mut self, meas: nfe_core::estimation::PoseMeasurement) {
-        match self.estimator_mode {
-            EstimatorMode::DeadReckon => {
-                let _ = self.dead_reckon.correct_pose(meas);
-            }
-            EstimatorMode::Ekf => {
-                let _ = StateEstimator::correct_pose(&mut self.ekf, meas);
-            }
-        }
+        let _ = StateEstimator::correct_pose(&mut self.ekf, meas);
     }
 
     fn estimate(&self) -> StateEstimate {
-        match self.estimator_mode {
-            EstimatorMode::DeadReckon => self.dead_reckon.estimate(),
-            EstimatorMode::Ekf => self.ekf.estimate(),
+        self.ekf.estimate()
+    }
+
+    fn drain_raceline_worker_events(&mut self) {
+        while let Some(event) = self.raceline_worker.poll_event() {
+            match event {
+                RaceLinePlannerEvent::Started { .. } => {}
+                RaceLinePlannerEvent::Completed { revision, line, .. } => {
+                    self.planner.record_success(line, revision)
+                }
+                RaceLinePlannerEvent::Failed {
+                    revision, error, ..
+                } => self.planner.record_failure(revision, error),
+            }
         }
     }
 
     fn ensure_raceline(&mut self, map: &TrackMap) {
-        let needs_update = self
-            .raceline
-            .as_ref()
-            .is_none_or(|r| r.revision != map.revision);
-        if needs_update {
-            if let Ok(line) = solve_min_curvature(map, &self.cfg.algo.raceline_solver) {
-                self.raceline = Some(line);
+        self.planner.advance_for_map_revision(map.revision);
+        if !self.planner.should_attempt(map.revision) {
+            return;
+        }
+        match self.raceline_worker.submit_latest(map.clone()) {
+            RaceLinePlannerSubmit::Accepted
+            | RaceLinePlannerSubmit::Duplicate
+            | RaceLinePlannerSubmit::ReplacedPending => {
+                self.planner.record_attempt_started(map.revision)
             }
+            RaceLinePlannerSubmit::BusyCurrentKept | RaceLinePlannerSubmit::Disabled => {}
         }
     }
 }
@@ -604,6 +831,266 @@ mod tests {
         }
     }
 
+    fn l_shape_world_points() -> Vec<Point2> {
+        let mut points = Vec::new();
+        for i in 0..=30 {
+            let t = -1.5 + i as f32 * 0.10;
+            points.push(Point2::new(1.8, t));
+        }
+        for i in 0..=25 {
+            let t = -0.7 + i as f32 * 0.10;
+            points.push(Point2::new(t, 1.2));
+        }
+        points
+    }
+
+    fn scan_from_pose(pose: Pose2, ts: u64) -> LidarCloud {
+        let (s, c) = pose.yaw.sin_cos();
+        let points = l_shape_world_points()
+            .into_iter()
+            .map(|world| {
+                let dx = world.x - pose.x;
+                let dy = world.y - pose.y;
+                let x = c * dx + s * dy;
+                let y = -s * dx + c * dy;
+                LidarPoint {
+                    x,
+                    y,
+                    dist_m: x.hypot(y),
+                    angle_rad: y.atan2(x),
+                    timestamp_us: ts,
+                }
+            })
+            .collect();
+        LidarCloud {
+            points,
+            timestamp_us: ts,
+        }
+    }
+
+    fn l_shape_snapshot(scan_pose: Pose2, ts: u64, ax: f32) -> SensorSnapshot {
+        SensorSnapshot {
+            lidar: scan_from_pose(scan_pose, ts),
+            imu: ImuSample {
+                ax,
+                timestamp_us: ts,
+                ..Default::default()
+            },
+            sensor_fault: false,
+            sonar_m: [f32::MAX; 3],
+            start_line_crossed: false,
+        }
+    }
+
+    fn simple_raceline(revision: u64) -> RaceLine {
+        RaceLine {
+            points: vec![
+                RaceLinePoint {
+                    p: Point2::new(0.0, 0.0),
+                    yaw: 0.0,
+                    curvature: 0.0,
+                    speed_ms: 1.0,
+                    accel_x_ms2: 0.0,
+                    s_m: 0.0,
+                },
+                RaceLinePoint {
+                    p: Point2::new(1.0, 0.0),
+                    yaw: 0.0,
+                    curvature: 0.0,
+                    speed_ms: 1.0,
+                    accel_x_ms2: 0.0,
+                    s_m: 1.0,
+                },
+                RaceLinePoint {
+                    p: Point2::new(2.0, 0.0),
+                    yaw: 0.0,
+                    curvature: 0.0,
+                    speed_ms: 1.0,
+                    accel_x_ms2: 0.0,
+                    s_m: 2.0,
+                },
+            ],
+            closed: true,
+            revision,
+        }
+    }
+
+    fn planner_policy() -> PlannerPolicy {
+        PlannerPolicy {
+            max_consecutive_failures: 1,
+            max_outdated_ticks: 1,
+            max_revision_lag: 1,
+        }
+    }
+
+    #[test]
+    fn planner_success_marks_line_fresh() {
+        let mut planner = PlannerState::new(planner_policy());
+
+        planner.record_success(simple_raceline(7), 7);
+
+        assert!(matches!(planner.availability, PlannerAvailability::Fresh));
+        assert_eq!(planner.source_map_revision, Some(7));
+        assert_eq!(planner.usable_line().map(|line| line.revision), Some(7));
+        assert_eq!(planner.consecutive_failures, 0);
+    }
+
+    #[test]
+    fn planner_success_resets_failure_and_stale_counters() {
+        let mut planner = PlannerState::new(PlannerPolicy {
+            max_consecutive_failures: 5,
+            max_outdated_ticks: 5,
+            max_revision_lag: 5,
+        });
+        planner.record_success(simple_raceline(1), 1);
+        planner.advance_for_map_revision(2);
+        planner.record_failure(2, RaceLineError::EmptyMap);
+
+        assert_eq!(planner.consecutive_failures, 1);
+        assert_eq!(planner.outdated_ticks, 1);
+
+        planner.record_success(simple_raceline(2), 2);
+
+        assert_eq!(planner.consecutive_failures, 0);
+        assert_eq!(planner.outdated_ticks, 0);
+        assert!(matches!(planner.availability, PlannerAvailability::Fresh));
+        assert_eq!(planner.usable_line().map(|line| line.revision), Some(2));
+    }
+
+    #[test]
+    fn planner_failure_without_previous_line_is_unusable() {
+        let mut planner = PlannerState::new(planner_policy());
+
+        planner.record_failure(1, RaceLineError::EmptyMap);
+
+        assert_eq!(planner.usable_line().map(|line| line.revision), None);
+        assert!(matches!(
+            planner.availability,
+            PlannerAvailability::UnusableStale {
+                reason: StaleReason::SolverFailedWithoutPrevious
+            }
+        ));
+        assert_eq!(planner.last_failed_map_revision, Some(1));
+        assert_eq!(planner.consecutive_failures, 1);
+    }
+
+    #[test]
+    fn planner_failure_with_previous_line_stays_usable_within_policy() {
+        let mut planner = PlannerState::new(PlannerPolicy {
+            max_consecutive_failures: 2,
+            max_outdated_ticks: 5,
+            max_revision_lag: 5,
+        });
+        planner.record_success(simple_raceline(1), 1);
+        planner.advance_for_map_revision(2);
+
+        planner.record_failure(2, RaceLineError::EmptyMap);
+
+        assert_eq!(planner.usable_line().map(|line| line.revision), Some(1));
+        assert!(matches!(
+            planner.availability,
+            PlannerAvailability::UsableStale {
+                revision_lag: 1,
+                outdated_ticks: 1,
+                consecutive_failures: 1,
+            }
+        ));
+    }
+
+    #[test]
+    fn planner_failure_with_previous_line_exceeding_policy_is_unusable() {
+        let mut planner = PlannerState::new(planner_policy());
+        planner.record_success(simple_raceline(1), 1);
+        planner.advance_for_map_revision(2);
+        planner.record_failure(2, RaceLineError::EmptyMap);
+
+        planner.advance_for_map_revision(3);
+        planner.record_failure(3, RaceLineError::InsufficientBoundaries);
+
+        assert_eq!(planner.usable_line().map(|line| line.revision), None);
+        assert!(matches!(
+            planner.availability,
+            PlannerAvailability::UnusableStale {
+                reason: StaleReason::TooManyFailures
+            }
+        ));
+    }
+
+    #[test]
+    fn planner_line_becomes_unusable_when_stale_too_long() {
+        let mut planner = PlannerState::new(planner_policy());
+        planner.record_success(simple_raceline(1), 1);
+
+        planner.advance_for_map_revision(2);
+        assert_eq!(planner.usable_line().map(|line| line.revision), Some(1));
+        planner.advance_for_map_revision(2);
+
+        assert_eq!(planner.usable_line().map(|line| line.revision), None);
+        assert!(matches!(
+            planner.availability,
+            PlannerAvailability::UnusableStale {
+                reason: StaleReason::TooOldInTicks
+            }
+        ));
+    }
+
+    #[test]
+    fn planner_line_becomes_unusable_when_revision_lag_is_too_large() {
+        let mut planner = PlannerState::new(planner_policy());
+        planner.record_success(simple_raceline(1), 1);
+
+        planner.advance_for_map_revision(3);
+
+        assert_eq!(planner.usable_line().map(|line| line.revision), None);
+        assert!(matches!(
+            planner.availability,
+            PlannerAvailability::UnusableStale {
+                reason: StaleReason::MapRevisionLagTooLarge
+            }
+        ));
+    }
+
+    #[test]
+    fn planner_revision_reset_invalidates_previous_line() {
+        let mut planner = PlannerState::new(planner_policy());
+        planner.record_success(simple_raceline(10), 10);
+
+        planner.advance_for_map_revision(1);
+
+        assert_eq!(planner.usable_line().map(|line| line.revision), None);
+        assert_eq!(planner.source_map_revision, None);
+        assert!(matches!(
+            planner.availability,
+            PlannerAvailability::UnusableStale {
+                reason: StaleReason::MapRevisionInconsistent
+            }
+        ));
+    }
+
+    fn slam_test_config() -> RuntimeConfig {
+        let mut cfg = RuntimeConfig::default();
+        cfg.mapping.enabled = true;
+        cfg.mapping.queue_capacity = 8;
+        cfg.perception_mode = PerceptionMode::Corridor;
+        cfg.algo.mapper.resolution_m = 0.05;
+        cfg.algo.mapper.width_m = 8.0;
+        cfg.algo.mapper.height_m = 8.0;
+        cfg.algo.mapper.origin_x_m = -4.0;
+        cfg.algo.mapper.origin_y_m = -4.0;
+        cfg.algo.correlative.search_window_xy_m = 0.6;
+        cfg.algo.correlative.search_window_yaw_rad = 0.3;
+        cfg.algo.correlative.coarse_xy_step_m = 0.10;
+        cfg.algo.correlative.coarse_yaw_step_rad = 0.10;
+        cfg.algo.correlative.fine_xy_step_m = 0.02;
+        cfg.algo.correlative.fine_yaw_step_rad = 0.02;
+        cfg.algo.correlative.min_points = 8;
+        cfg.algo.correlative.min_confidence = 0.10;
+        cfg.algo.ekf.r_pos = 0.01;
+        cfg.algo.ekf.r_yaw = 0.01;
+        cfg.algo.ekf.pose_gate = 100.0;
+        cfg
+    }
+
     fn apex_snapshot(ts: u64) -> SensorSnapshot {
         let mut cloud = LidarCloud {
             points: Vec::new(),
@@ -641,12 +1128,23 @@ mod tests {
     fn pipeline_reactive_step_produces_finite_command() {
         let mut cfg = RuntimeConfig::default();
         cfg.mapping.enabled = false;
-        let mut p = Pipeline::new(cfg, EstimatorMode::DeadReckon);
+        let mut p = Pipeline::new(cfg);
         p.reset(Pose2::default(), 0);
         let out = p.step(corridor_snapshot(10_000));
         assert!(out.command.steering_rad.is_finite());
         assert!(out.command.throttle.is_finite());
         assert_eq!(out.drive_mode, nfe_algo::supervisor::DriveMode::Reactive);
+    }
+
+    fn wait_for_complete_map(p: &Pipeline) -> Option<TrackMap> {
+        for _ in 0..100 {
+            let map = p.mapper.latest_map();
+            if map.as_ref().is_some_and(|m| m.complete) {
+                return map;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        p.mapper.latest_map()
     }
 
     #[test]
@@ -660,11 +1158,186 @@ mod tests {
         cfg.algo.apex.min_lookahead_m = 8.0;
         cfg.algo.apex.max_lookahead_m = 8.0;
         cfg.algo.apex.lookahead_sensitivity = 0.0;
-        let mut p = Pipeline::new(cfg, EstimatorMode::DeadReckon);
+        let mut p = Pipeline::new(cfg);
         p.reset(Pose2::default(), 0);
         let out = p.step(apex_snapshot(10_000));
         assert!(out.command.steering_rad.is_finite());
         assert!(out.command.throttle.is_finite());
         assert!(out.corridor.confidence > 0.0, "corridor={:?}", out.corridor);
+    }
+
+    #[test]
+    fn slam_work_is_deduped_by_lidar_timestamp() {
+        let mut cfg = RuntimeConfig::default();
+        cfg.mapping.enabled = true;
+        cfg.mapping.queue_capacity = 8;
+        cfg.perception_mode = PerceptionMode::Corridor;
+        let mut p = Pipeline::new(cfg);
+        p.reset(Pose2::default(), 0);
+
+        let _ = p.step(corridor_snapshot(10_000));
+        let _ = p.step(corridor_snapshot(10_000));
+        let _ = p.step(corridor_snapshot(20_000));
+        p.mapper.shutdown();
+
+        let status = p.mapper.latest_status();
+        assert_eq!(status.submitted_scans, 2, "status={status:?}");
+        assert_eq!(status.processed_scans, 2, "status={status:?}");
+    }
+
+    #[test]
+    fn start_line_edge_marks_mapping_lap_complete() {
+        let mut cfg = RuntimeConfig::default();
+        cfg.mapping.enabled = true;
+        cfg.mapping.queue_capacity = 8;
+        cfg.perception_mode = PerceptionMode::Corridor;
+        let mut p = Pipeline::new(cfg);
+        p.reset(Pose2::default(), 0);
+
+        let _ = p.step(corridor_snapshot(10_000));
+        let mut lap_edge = corridor_snapshot(20_000);
+        lap_edge.start_line_crossed = true;
+        let _ = p.step(lap_edge);
+        p.mapper.shutdown();
+
+        let map = p.mapper.latest_map().expect("map should be published");
+        assert!(map.complete);
+    }
+
+    #[test]
+    fn ekf_is_corrected_by_correlative_localization() {
+        let cfg = slam_test_config();
+        let mut p = Pipeline::new(cfg);
+        p.reset(Pose2::default(), 1);
+
+        let mut map_seed = l_shape_snapshot(Pose2::default(), 10_000, 0.0);
+        map_seed.start_line_crossed = true;
+        let _ = p.step(map_seed);
+        let map = wait_for_complete_map(&p).expect("complete map");
+        assert!(map.distance_field.is_some());
+
+        let _ = p.step(l_shape_snapshot(Pose2::default(), 1_010_000, 0.4));
+        let corrected = p.step(l_shape_snapshot(Pose2::default(), 2_010_000, 0.0));
+
+        assert!(
+            corrected.estimate.pose.x.abs() < 0.08,
+            "estimate={:?} localization={:?}",
+            corrected.estimate,
+            corrected.localization
+        );
+        assert!(corrected.localization.confidence > 0.5);
+    }
+
+    #[test]
+    fn mcl_stays_dormant_when_primary_localizer_is_confident() {
+        let mut cfg = slam_test_config();
+        cfg.algo.supervisor.min_localization_confidence = 0.5;
+        let mut p = Pipeline::new(cfg);
+        p.reset(Pose2::default(), 1);
+
+        let mut map_seed = l_shape_snapshot(Pose2::default(), 10_000, 0.0);
+        map_seed.start_line_crossed = true;
+        let _ = p.step(map_seed);
+        let _ = wait_for_complete_map(&p).expect("complete map");
+        let before = p.particle.update_count();
+
+        let out = p.step(l_shape_snapshot(Pose2::default(), 20_000, 0.0));
+
+        assert!(
+            out.localization.confidence > 0.5,
+            "localization={:?}",
+            out.localization
+        );
+        assert_eq!(p.particle.update_count(), before);
+    }
+
+    fn prime_supervisor_for_raceline(p: &mut Pipeline) {
+        let mode = p.supervisor.step(&HealthReport {
+            localization_confidence: 1.0,
+            loop_closure: LoopClosureStatus {
+                detected: true,
+                residual_m: 0.0,
+                overlap: 1.0,
+            },
+            estimator_diverged: false,
+            raceline_ready: true,
+            mapping_enabled: true,
+            start_line_crossed: true,
+        });
+        assert_eq!(mode, nfe_algo::supervisor::DriveMode::RaceLine);
+    }
+
+    #[test]
+    fn degraded_localization_confidence_triggers_reactive_fallback() {
+        let mut cfg = slam_test_config();
+        cfg.algo.supervisor.engage_dwell_ticks = 1;
+        cfg.algo.supervisor.fallback_dwell_ticks = 1;
+        cfg.algo.supervisor.min_lap_for_raceline = 1;
+        cfg.algo.supervisor.min_localization_confidence = 0.5;
+        let mut p = Pipeline::new(cfg);
+        p.reset(Pose2::default(), 1);
+
+        let mut map_seed = l_shape_snapshot(Pose2::default(), 10_000, 0.0);
+        map_seed.start_line_crossed = true;
+        let _ = p.step(map_seed);
+        let map = wait_for_complete_map(&p).expect("complete map");
+        p.planner
+            .record_success(simple_raceline(map.revision), map.revision);
+        prime_supervisor_for_raceline(&mut p);
+
+        let degraded = SensorSnapshot {
+            lidar: LidarCloud {
+                points: Vec::new(),
+                timestamp_us: 30_000,
+            },
+            imu: ImuSample {
+                timestamp_us: 30_000,
+                ..Default::default()
+            },
+            sensor_fault: false,
+            sonar_m: [f32::MAX; 3],
+            start_line_crossed: false,
+        };
+        let fallback = p.step(degraded);
+
+        assert_eq!(
+            fallback.drive_mode,
+            nfe_algo::supervisor::DriveMode::Reactive
+        );
+        assert_eq!(fallback.localization.confidence, 0.0);
+    }
+
+    #[test]
+    fn unavailable_raceline_controller_forces_reactive_command() {
+        let mut cfg = slam_test_config();
+        cfg.algo.supervisor.engage_dwell_ticks = 1;
+        cfg.algo.supervisor.fallback_dwell_ticks = 5;
+        cfg.algo.supervisor.min_lap_for_raceline = 1;
+        cfg.algo.supervisor.min_localization_confidence = 0.5;
+        let mut p = Pipeline::new(cfg);
+        p.reset(Pose2::default(), 1);
+
+        let mut map_seed = l_shape_snapshot(Pose2::default(), 10_000, 0.0);
+        map_seed.start_line_crossed = true;
+        let _ = p.step(map_seed);
+        let map = wait_for_complete_map(&p).expect("complete map");
+        p.planner
+            .record_success(simple_raceline(map.revision), map.revision);
+        prime_supervisor_for_raceline(&mut p);
+
+        p.planner.line = None;
+        p.planner.source_map_revision = None;
+        p.planner.availability = PlannerAvailability::NoLine;
+        let fallback = p.step(l_shape_snapshot(Pose2::default(), 30_000, 0.0));
+
+        assert_eq!(
+            p.supervisor.mode(),
+            nfe_algo::supervisor::DriveMode::RaceLine
+        );
+        assert_eq!(
+            fallback.drive_mode,
+            nfe_algo::supervisor::DriveMode::Reactive
+        );
+        assert_ne!(fallback.command.status, ControllerStatus::Unavailable);
     }
 }

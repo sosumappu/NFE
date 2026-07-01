@@ -118,6 +118,7 @@ impl ScriptedSource {
             imu: ImuSample::default(),
             sonar_m: [f32::MAX; 3],
             sensor_fault: false,
+            start_line_crossed: false,
         };
 
         let mut snapshots = vec![neutral; calib_count];
@@ -202,6 +203,7 @@ fn corridor_snapshot(timestamp_us: u64, center_y: f32) -> SensorSnapshot {
         },
         sonar_m: [f32::MAX; 3],
         sensor_fault: false,
+        start_line_crossed: false,
     }
 }
 
@@ -233,6 +235,7 @@ fn core_to_car_snapshot(snapshot: nfe_core::sensors::SensorSnapshot) -> SensorSn
         },
         sonar_m: snapshot.sonar_m,
         sensor_fault: snapshot.sensor_fault,
+        start_line_crossed: snapshot.start_line_crossed,
     }
 }
 
@@ -429,6 +432,7 @@ async fn estop_engages_when_obstacle_too_close_sonar() {
         imu: ImuSample::default(),
         sonar_m: [f32::MAX; 3],
         sensor_fault: false,
+        start_line_crossed: false,
     };
 
     let source: Box<dyn SensorSource> =

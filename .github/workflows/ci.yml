@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rust-health:
+    name: Rust health checks
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            accept-flake-config = true
+
+      - name: Configure Cachix pulls
+        uses: cachix/cachix-action@v16
+        with:
+          name: neverfastenough
+          skipPush: true
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('flake.lock', 'Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-cargo-
+
+      - name: Check flake evaluation
+        run: nix flake check --no-build --print-build-logs
+
+      - name: Check formatting
+        run: nix develop --command cargo fmt --check
+
+      - name: Run clippy
+        run: nix develop --command cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+
+      - name: Run tests
+        run: nix develop --command cargo test --locked --workspace
+
+      - name: Audit dependencies
+        run: nix develop --command cargo audit
+
+  target-package:
+    name: Target package build
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            accept-flake-config = true
+
+      - name: Configure Cachix pulls
+        uses: cachix/cachix-action@v16
+        with:
+          name: neverfastenough
+          skipPush: true
+
+      - name: Build aarch64 package
+        run: nix build --print-build-logs .#packages.aarch64-linux.nfe-car
+

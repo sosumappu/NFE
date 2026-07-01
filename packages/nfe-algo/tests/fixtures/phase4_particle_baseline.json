@@ -1,0 +1,21 @@
+{
+  "description": "Phase 4 replacement baseline for the pre-persistent particle fallback on a fixed occupancy distance-field map and scan.",
+  "input": {
+    "seed": 40717,
+    "particles": 64,
+    "prior": { "x": 0.05, "y": -0.03, "yaw": 0.02 }
+  },
+  "localization": {
+    "confidence": 0.980198681,
+    "residual_m": 0.141421363,
+    "used_fallback": true,
+    "measurement": {
+      "pose": {
+        "x": 0.053569265,
+        "y": -0.022555947,
+        "yaw": 0.080657721
+      },
+      "quality": 0.980198681
+    }
+  }
+}
