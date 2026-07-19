@@ -352,9 +352,11 @@ nix flake check --no-build
 # Build the aarch64 package; requires an aarch64-capable builder from non-Linux/non-aarch64 hosts
 nix build .#packages.aarch64-linux.nfe-car
 
-# Deploy the NixOS system to the Pi
+# Deploy the NixOS system closure to the Pi; this does not build or flash an SD image
 deploy .#nfe
 ```
+
+CI builds the deploy-rs activation closure on a native `aarch64-linux` runner and pushes it to the `neverfastenough` Cachix cache. When deploying the same committed revision, Nix can substitute the cached `aarch64-linux` system closure locally and `deploy-rs` will copy it to the Pi over SSH instead of rebuilding the PREEMPT_RT system on the development machine. The SD-card image output is still available for initial flashing, but it is not part of the deploy cache workflow.
 
 On the Pi:
 

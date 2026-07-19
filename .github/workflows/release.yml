@@ -1,4 +1,4 @@
-name: Release image
+name: Cache deploy closure
 
 on:
   push:
@@ -9,12 +9,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: release-image-${{ github.ref }}
-  cancel-in-progress: false
+  group: deploy-closure-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  build-image:
-    name: Build NixOS image
+  build-closure:
+    name: Build deploy-rs closure
     runs-on: ubuntu-24.04-arm
     steps:
       - name: Check out repository
@@ -38,8 +38,10 @@ jobs:
         run: |
           key="$(sha256sum flake.lock flake.nix Cargo.lock modules/preempt-rt.nix hosts/nfe/configuration.nix | sha256sum | cut -d ' ' -f 1)"
           echo "key=$key" >> "$GITHUB_OUTPUT"
-          echo "### Nix source cache key" >> "$GITHUB_STEP_SUMMARY"
-          echo "\`$key\`" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "### Deploy closure cache key"
+            echo "\`$key\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Build car package
         run: nix build --print-build-logs --out-link result-nfe-car .#packages.aarch64-linux.nfe-car
@@ -47,15 +49,13 @@ jobs:
       - name: Build NixOS toplevel
         run: nix build --print-build-logs --out-link result-toplevel .#nixosConfigurations.nfe.config.system.build.toplevel
 
-      - name: Build SD-card image
-        id: sd-card
-        run: |
-          nix build --print-build-logs --out-link result-sd-card .#nixosConfigurations.nfe.config.system.build.images.sd-card
-          echo "path=$(readlink -f result-sd-card)" >> "$GITHUB_OUTPUT"
+      - name: Build deploy-rs activation path
+        run: nix build --print-build-logs --out-link result-deploy .#deploy.nodes.nfe.profiles.system.path
 
-      - name: Upload SD-card image artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: nfe-sd-card-${{ steps.cache-key.outputs.key }}
-          path: ${{ steps.sd-card.outputs.path }}
-          if-no-files-found: error
+      - name: Summarize deploy command
+        run: |
+          {
+            echo "### Cached deploy closure"
+            echo "After this run succeeds, deploy the cached generation with:"
+            echo "\`deploy .#nfe\`"
+          } >> "$GITHUB_STEP_SUMMARY"
