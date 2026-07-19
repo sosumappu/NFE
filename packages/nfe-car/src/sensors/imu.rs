@@ -14,7 +14,7 @@
 use std::{sync::Arc, thread, time::Duration};
 
 use crate::time::monotonic_us;
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
 use rppal::i2c::I2c;
 

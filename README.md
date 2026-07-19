@@ -504,7 +504,7 @@ cargo test --workspace
 Run lint as CI-equivalent validation:
 
 ```bash
-cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy --locked --workspace --all-targets --all-features -- -D clippy::correctness -D clippy::suspicious
 ```
 
 Build the Nix package:

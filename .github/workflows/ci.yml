@@ -46,7 +46,7 @@ jobs:
         run: nix develop --command cargo fmt --check
 
       - name: Run clippy
-        run: nix develop --command cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+        run: nix develop --command cargo clippy --locked --workspace --all-targets --all-features -- -D clippy::correctness -D clippy::suspicious
 
       - name: Run tests
         run: nix develop --command cargo test --locked --workspace

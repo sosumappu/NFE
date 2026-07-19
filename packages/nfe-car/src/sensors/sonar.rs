@@ -14,11 +14,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use rppal::gpio::{Event, Gpio, InputPin, Level, OutputPin, Trigger};
+use rppal::gpio::{Event, Gpio, InputPin, OutputPin, Trigger};
 use tracing::{debug, info, warn};
 
 use crate::init::ReadySignal;
-use crate::state::{SensorStateWriter, SharedState};
+use crate::state::SensorStateWriter;
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  Constants
@@ -81,7 +81,7 @@ pub fn try_spawn_all(
 ) -> Vec<thread::JoinHandle<()>> {
     SONAR_SENSORS
         .iter()
-        .zip(ready_signals.into_iter())
+        .zip(ready_signals)
         .filter_map(|(cfg, ready)| {
             let trig = match gpio.get(cfg.trig_bcm) {
                 Ok(p) => p.into_output(),
@@ -249,7 +249,7 @@ fn measure(
     };
 
     let dist_m = (fall - rise) as f32 * 1e-6 * SOUND_SPEED_M_S / 2.0;
-    if dist_m < DIST_MIN_M || dist_m > DIST_MAX_M {
+    if !(DIST_MIN_M..=DIST_MAX_M).contains(&dist_m) {
         DIST_MAX_M
     } else {
         dist_m
