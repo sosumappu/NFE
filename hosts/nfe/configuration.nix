@@ -24,6 +24,7 @@
     initialHashedPassword = ""; # passwordless for initial flash; harden post-deploy
     openssh.authorizedKeys.keys = [
       "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOF1uj9DgHdyYxOezFk2GhrgdFR8DWoXXVr/O2g2CMfG adelarab.works@gmail.com"
+      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPkUWf9LaO+xCEDLsUBTWiEZTWdfiWaj2jo3x6qhI1Ao nix-daemon-builder"
     ];
   };
 
@@ -31,6 +32,7 @@
     initialHashedPassword = "";
     openssh.authorizedKeys.keys = [
       "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOF1uj9DgHdyYxOezFk2GhrgdFR8DWoXXVr/O2g2CMfG adelarab.works@gmail.com"
+      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPkUWf9LaO+xCEDLsUBTWiEZTWdfiWaj2jo3x6qhI1Ao nix-daemon-builder"
     ];
   };
 
@@ -64,7 +66,19 @@
     logRefusedConnections = false;
   };
   systemd.network.networks = {
-    "99-ethernet-default-dhcp".networkConfig.MulticastDNS = "yes";
+    "20-end0-debug" = {
+      matchConfig.Name = "end0";
+      address = ["192.168.50.3/32"];
+      routes = [
+        {Destination = "192.168.50.2/32";}
+      ];
+      networkConfig = {
+        DHCP = "ipv4";
+        LinkLocalAddressing = "yes";
+        MulticastDNS = "yes";
+      };
+      dhcpV4Config.RouteMetric = 2048;
+    };
     "30-wlan0-ap" = {
       matchConfig.Name = "wlan0";
       address = ["192.168.50.1/24"];
@@ -108,6 +122,7 @@
   services.avahi = {
     enable = true;
     nssmdns4 = true;
+    openFirewall = true;
     publish = {
       enable = true;
       addresses = true;

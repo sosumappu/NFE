@@ -2,6 +2,10 @@
 **/result
 **/result/
 **/sessions/
+*.img
+*.img.zst
+*.raw
+*.raw.zst
 best_runtime_config.json
 nfe-optuna.db
 .mypy_cache/
