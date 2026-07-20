@@ -74,8 +74,10 @@
         MulticastDNS = "yes";
       };
     };
-    "30-wlan0-ap" = {
-      matchConfig.Name = "wlan0";
+    # The Pi 5 exposes the onboard Wi-Fi device as wld0; hostapd binds to an
+    # exact interface name and otherwise fails before it can start the AP.
+    "30-wld0-ap" = {
+      matchConfig.Name = "wld0";
       address = ["192.168.51.1/24"];
       networkConfig = {
         DHCPServer = "yes";
@@ -101,10 +103,10 @@
 
   services.hostapd = {
     enable = true;
-    radios.wlan0 = {
+    radios.wld0 = {
       band = "2g";
       channel = 6;
-      networks.wlan0 = {
+      networks.wld0 = {
         ssid = "NFE";
         authentication = {
           mode = "wpa2-sha256";

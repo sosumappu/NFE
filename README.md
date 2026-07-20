@@ -366,6 +366,7 @@ On the Pi:
 ```bash
 systemctl status car
 systemctl status hostapd --no-pager
+networkctl status end0 wld0
 systemctl restart car
 journalctl -u hostapd -b --no-pager
 journalctl -u car -f
