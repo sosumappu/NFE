@@ -1,0 +1,74 @@
+name: Build SD image
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sd-image-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-image:
+    name: Build Raspberry Pi SD image
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            accept-flake-config = true
+            narinfo-cache-negative-ttl = 0
+
+      - name: Configure Cachix pulls and pushes
+        uses: cachix/cachix-action@v16
+        with:
+          name: neverfastenough
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      - name: Build SD image
+        run: nix build --print-build-logs --out-link result-sd-image .#packages.aarch64-linux.nfe-sd-image
+
+      - name: Collect image artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          mapfile -t image_paths < <(
+            find -L result-sd-image -type f \
+              \( -name '*.img' -o -name '*.img.zst' -o -name '*.raw' -o -name '*.raw.zst' \) \
+              -print
+          )
+
+          if [ "${#image_paths[@]}" -eq 0 ]; then
+            echo "::error::No image file found under result-sd-image"
+            find -L result-sd-image -maxdepth 3 -print
+            exit 1
+          fi
+
+          for path in "${image_paths[@]}"; do
+            target="$(realpath "$path")"
+            cp -L "$path" "artifacts/$(basename "$target")"
+          done
+
+          {
+            echo "### Built SD image"
+            echo
+            echo '```'
+            ls -lh artifacts
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload SD image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nfe-sd-image-${{ github.sha }}
+          path: artifacts/*
+          compression-level: 0
+          retention-days: 7

@@ -70,8 +70,9 @@
 
     #
     packages = forSystems (system: {
-      inherit ((pkgsFor "aarch64-linux")) nfe-car;
-      default = (pkgsFor "aarch64-linux").nfe-car;
+      inherit ((pkgsFor targetSystem)) nfe-car;
+      nfe-sd-image = self.nixosConfigurations.nfe-sd-image.config.system.build.sdImage;
+      default = (pkgsFor targetSystem).nfe-car;
     });
 
     # ── NixOS configuration: nfe ──────────────────────────────────
@@ -100,6 +101,17 @@
             algorithm = "zstd";
           };
         }
+      ];
+    };
+
+    nixosConfigurations.nfe-sd-image = self.nixosConfigurations.nfe.extendModules {
+      modules = [
+        nixos-raspberrypi.nixosModules.sd-image
+        ({lib, ...}: {
+          boot.supportedFilesystems = lib.mkForce ["ext4" "vfat"];
+          boot.initrd.supportedFilesystems = lib.mkForce ["ext4" "vfat"];
+          boot.zfs.forceImportRoot = lib.mkForce false;
+        })
       ];
     };
 

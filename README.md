@@ -352,11 +352,14 @@ nix flake check --no-build
 # Build the aarch64 package; requires an aarch64-capable builder from non-Linux/non-aarch64 hosts
 nix build .#packages.aarch64-linux.nfe-car
 
+# Build a Raspberry Pi SD-card image for initial flashing
+nix build .#packages.aarch64-linux.nfe-sd-image
+
 # Deploy the NixOS system closure to the Pi; this does not build or flash an SD image
 deploy .#nfe
 ```
 
-CI builds the deploy-rs activation closure on a native `aarch64-linux` runner and pushes it to the `neverfastenough` Cachix cache. When deploying the same committed revision, Nix can substitute the cached `aarch64-linux` system closure locally and `deploy-rs` will copy it to the Pi over SSH instead of rebuilding the PREEMPT_RT system on the development machine. The SD-card image output is still available for initial flashing, but it is not part of the deploy cache workflow.
+CI builds the deploy-rs activation closure on a native `aarch64-linux` runner and pushes it to the `neverfastenough` Cachix cache. When deploying the same committed revision, Nix can substitute the cached `aarch64-linux` system closure locally and `deploy-rs` will copy it to the Pi over SSH instead of rebuilding the PREEMPT_RT system on the development machine. The manual `Build SD image` workflow builds `.#packages.aarch64-linux.nfe-sd-image`, uses the same Cachix caches, and uploads the compressed image artifact for initial flashing. The flashed image starts the `NFE` Wi-Fi AP with password `neverfastenough`; the Pi listens at `192.168.50.1` on that AP.
 
 On the Pi:
 
