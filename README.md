@@ -359,7 +359,7 @@ nix build .#packages.aarch64-linux.nfe-sd-image
 deploy .#nfe
 ```
 
-CI builds the deploy-rs activation closure on a native `aarch64-linux` runner and pushes it to the `neverfastenough` Cachix cache. When deploying the same committed revision, Nix can substitute the cached `aarch64-linux` system closure locally and `deploy-rs` will copy it to the Pi over SSH instead of rebuilding the PREEMPT_RT system on the development machine. The manual `Build SD image` workflow builds `.#packages.aarch64-linux.nfe-sd-image`, uses the same Cachix caches, and uploads the compressed image artifact for initial flashing. The flashed image starts the `NFE` Wi-Fi AP with password `neverfastenough`; the Pi listens at `192.168.50.1` on that AP. For fallback debugging over Ethernet, plug in a cable, set the development machine's Ethernet address to `192.168.50.2/24`, and SSH to `localhost@192.168.50.3`.
+CI builds the deploy-rs activation closure on a native `aarch64-linux` runner and pushes it to the `neverfastenough` Cachix cache. When deploying the same committed revision, Nix can substitute the cached `aarch64-linux` system closure locally and `deploy-rs` will copy it to the Pi over SSH instead of rebuilding the PREEMPT_RT system on the development machine. The manual `Build SD image` workflow builds `.#packages.aarch64-linux.nfe-sd-image`, uses the same Cachix caches, and uploads the compressed image artifact for initial flashing. The flashed image starts the `NFE` Wi-Fi AP with password `neverfastenough`; the Pi listens at `192.168.51.1` on that AP. For fallback debugging over Ethernet, plug in a cable, set the development machine's Ethernet address to `192.168.50.1/24`, and SSH to `localhost@192.168.50.3`.
 
 On the Pi:
 

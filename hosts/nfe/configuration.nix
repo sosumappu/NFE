@@ -68,20 +68,15 @@
   systemd.network.networks = {
     "20-end0-debug" = {
       matchConfig.Name = "end0";
-      address = ["192.168.50.3/32"];
-      routes = [
-        {Destination = "192.168.50.2/32";}
-      ];
+      address = ["192.168.50.3/24"];
       networkConfig = {
-        DHCP = "ipv4";
         LinkLocalAddressing = "yes";
         MulticastDNS = "yes";
       };
-      dhcpV4Config.RouteMetric = 2048;
     };
     "30-wlan0-ap" = {
       matchConfig.Name = "wlan0";
-      address = ["192.168.50.1/24"];
+      address = ["192.168.51.1/24"];
       networkConfig = {
         DHCPServer = "yes";
         LinkLocalAddressing = "no";
