@@ -106,8 +106,11 @@
     radios.wld0 = {
       band = "2g";
       channel = 6;
+      wifi4.enable = false;
+      wifi5.enable = false;
       networks.wld0 = {
         ssid = "NFE";
+        settings.wmm_enabled = false;
         authentication = {
           mode = "wpa2-sha256";
           wpaPassword = "neverfastenough";
@@ -207,6 +210,7 @@
     # RT debugging
     rt-tests # cyclictest, hackbench
     ethtool
+    iw
     nfe-car
   ];
 
