@@ -87,8 +87,10 @@ mod real {
                     .context("ESC (GPIO18) init failed — is dtoverlay=pwm-2chan in config.txt? Is /sys/class/pwm/pwmchip0 group-writable?")?;
                 let _ = pwm.set_pulse_width(std::time::Duration::ZERO);
                 pwm.set_period(period).context("ESC set_period")?;
-                pwm.set_pulse_width(neutral).context("ESC set_pulse_width")?;
-                pwm.set_polarity(Polarity::Normal).context("ESC set_polarity")?;
+                pwm.set_pulse_width(neutral)
+                    .context("ESC set_pulse_width")?;
+                pwm.set_polarity(Polarity::Normal)
+                    .context("ESC set_polarity")?;
                 pwm.enable().context("ESC enable")?;
                 pwm
             };
@@ -97,8 +99,10 @@ mod real {
                     .context("servo (GPIO19) init failed")?;
                 let _ = pwm.set_pulse_width(std::time::Duration::ZERO);
                 pwm.set_period(period).context("servo set_period")?;
-                pwm.set_pulse_width(neutral).context("servo set_pulse_width")?;
-                pwm.set_polarity(Polarity::Normal).context("servo set_polarity")?;
+                pwm.set_pulse_width(neutral)
+                    .context("servo set_pulse_width")?;
+                pwm.set_polarity(Polarity::Normal)
+                    .context("servo set_polarity")?;
                 pwm.enable().context("servo enable")?;
                 pwm
             };
