@@ -357,9 +357,13 @@ nix build .#packages.aarch64-linux.nfe-sd-image
 
 # Deploy the NixOS system closure to the Pi; this does not build or flash an SD image
 deploy .#nfe
+
+# Explicit IP fallbacks if mDNS is stale
+deploy --hostname 192.168.51.1 .#nfe # NFE AP
+deploy --hostname 192.168.50.3 .#nfe # Ethernet fallback
 ```
 
-CI builds the deploy-rs activation closure on a native `aarch64-linux` runner and pushes it to the `neverfastenough` Cachix cache. When deploying the same committed revision, Nix can substitute the cached `aarch64-linux` system closure locally and `deploy-rs` will copy it to the Pi over SSH instead of rebuilding the PREEMPT_RT system on the development machine. The manual `Build SD image` workflow builds `.#packages.aarch64-linux.nfe-sd-image`, uses the same Cachix caches, and uploads the compressed image artifact for initial flashing. The flashed image starts the `NFE` Wi-Fi AP with password `neverfastenough`; the Pi listens at `192.168.51.1` on that AP. For fallback debugging over Ethernet, plug in a cable, set the development machine's Ethernet address to `192.168.50.1/24`, and SSH to `localhost@192.168.50.3`.
+CI builds the deploy-rs activation closure on a native `aarch64-linux` runner and pushes it to the `neverfastenough` Cachix cache. When deploying the same committed revision, Nix can substitute the cached `aarch64-linux` system closure locally and `deploy-rs` will copy it to the Pi over SSH instead of rebuilding the PREEMPT_RT system on the development machine. The deploy-rs node uses `nfe.local` and copies the full closure over SSH, so the same deploy command works over either the `NFE` AP or the Ethernet fallback without the Pi needing upstream internet. The manual `Build SD image` workflow builds `.#packages.aarch64-linux.nfe-sd-image`, uses the same Cachix caches, and uploads the compressed image artifact for initial flashing. The flashed image starts the `NFE` Wi-Fi AP with password `neverfastenough`; the Pi listens at `192.168.51.1` on that AP and advertises `nfe.local`. For fallback debugging over Ethernet, plug in a cable, set the development machine's Ethernet address to `192.168.50.1/24`, and SSH to `localhost@nfe.local` or `localhost@192.168.50.3`.
 
 On the Pi:
 

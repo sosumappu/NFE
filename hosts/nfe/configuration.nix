@@ -71,7 +71,6 @@
       address = ["192.168.50.3/24"];
       networkConfig = {
         LinkLocalAddressing = "yes";
-        MulticastDNS = "yes";
       };
     };
     # The Pi 5 exposes the onboard Wi-Fi device as wld0; hostapd binds to an
@@ -82,7 +81,6 @@
       networkConfig = {
         DHCPServer = "yes";
         LinkLocalAddressing = "no";
-        MulticastDNS = "yes";
       };
       dhcpServerConfig = {
         PoolOffset = 10;
@@ -119,8 +117,17 @@
     };
   };
 
+  services.resolved.settings.Resolve = {
+    LLMNR = false;
+    MulticastDNS = false;
+  };
+
   services.avahi = {
     enable = true;
+    hostName = "nfe";
+    domainName = "local";
+    ipv6 = false;
+    allowInterfaces = ["end0" "wld0"];
     nssmdns4 = true;
     openFirewall = true;
     publish = {

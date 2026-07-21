@@ -122,7 +122,8 @@
     deploy.nodes.nfe = {
       hostname = "nfe.local";
       sshUser = "localhost";
-      sshOpts = ["-i" "/Users/localhost/.ssh/nix_builder" "-o" "StrictHostKeyChecking=accept-new"];
+      sshOpts = ["-i" "/Users/localhost/.ssh/nix_builder" "-o" "StrictHostKeyChecking=accept-new" "-o" "ConnectTimeout=5"];
+      fastConnection = true;
       magicRollback = false;
       autoRollback = false;
       confirmTimeout = 60;
