@@ -136,7 +136,7 @@
       };
     };
 
-    # udev rules: expose GPIO/I2C to car group without root
+    # udev rules: expose GPIO/I2C/PWM to car group without root
     services.udev.extraRules = ''
       # GPIO
       SUBSYSTEM=="gpio", GROUP="gpio", MODE="0660"
@@ -148,6 +148,11 @@
       # LIDAR UART
       SUBSYSTEM=="tty", ATTRS{product}=="RPLidar*", GROUP="dialout", MODE="0660", SYMLINK+="lidar"
       SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", GROUP="dialout", MODE="0660", SYMLINK+="lidar"
+      # PWM sysfs — the pwmchip itself is group-writable, but the per-channel
+      # directories created by export are root:root 644 by default. This rule
+      # runs after each channel is exported and fixes the permissions so the
+      # car user (gpio group) can write period/duty_cycle/enable.
+      SUBSYSTEM=="pwm", ACTION=="add", RUN+="/bin/sh -c 'chgrp -R gpio /sys%p && chmod -R g+rw /sys%p'"
     '';
   };
 }

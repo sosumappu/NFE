@@ -58,7 +58,19 @@ fn throttle_to_pulse(throttle: f32) -> f64 {
 #[cfg(target_os = "linux")]
 mod real {
     use super::*;
-    use rppal::pwm::{Channel, Polarity, Pwm};
+    use rppal::pwm::{Polarity, Pwm};
+
+    // The Raspberry Pi 5 uses the RP1 co-processor for GPIO/PWM. rppal ≥0.22
+    // maps Channel::Pwm0/Pwm1 to pwmchip2 for Pi 5, but the RP1 PWM block
+    // is registered as pwmchip0 in sysfs on this kernel build. The overlay
+    // dtoverlay=pwm-2chan pin=18 pin2=19 maps:
+    //   GPIO18 → PWM0_CHAN2 → pwmchip0 channel 2  (ESC)
+    //   GPIO19 → PWM0_CHAN3 → pwmchip0 channel 3  (servo)
+    // Use with_pwmchip to bypass the model-detection that yields the wrong chip.
+    const ESC_CHIP: u8 = 0;
+    const ESC_CHAN: u8 = 2;
+    const SERVO_CHIP: u8 = 0;
+    const SERVO_CHAN: u8 = 3;
 
     pub struct RealActuator {
         esc: Pwm,
@@ -70,10 +82,26 @@ mod real {
             let period = std::time::Duration::from_micros(PWM_PERIOD_US as u64);
             let neutral = std::time::Duration::from_micros(PULSE_NEUTRAL_US as u64);
 
-            let esc = Pwm::with_period(Channel::Pwm0, period, neutral, Polarity::Normal, true)
-                .context("PWM0 (ESC) init failed — is dtoverlay=pwm-2chan in config.txt?")?;
-            let servo = Pwm::with_period(Channel::Pwm1, period, neutral, Polarity::Normal, true)
-                .context("PWM1 (servo) init failed")?;
+            let esc = {
+                let pwm = Pwm::with_pwmchip(ESC_CHIP, ESC_CHAN)
+                    .context("ESC (GPIO18) init failed — is dtoverlay=pwm-2chan in config.txt? Is /sys/class/pwm/pwmchip0 group-writable?")?;
+                let _ = pwm.set_pulse_width(std::time::Duration::ZERO);
+                pwm.set_period(period).context("ESC set_period")?;
+                pwm.set_pulse_width(neutral).context("ESC set_pulse_width")?;
+                pwm.set_polarity(Polarity::Normal).context("ESC set_polarity")?;
+                pwm.enable().context("ESC enable")?;
+                pwm
+            };
+            let servo = {
+                let pwm = Pwm::with_pwmchip(SERVO_CHIP, SERVO_CHAN)
+                    .context("servo (GPIO19) init failed")?;
+                let _ = pwm.set_pulse_width(std::time::Duration::ZERO);
+                pwm.set_period(period).context("servo set_period")?;
+                pwm.set_pulse_width(neutral).context("servo set_pulse_width")?;
+                pwm.set_polarity(Polarity::Normal).context("servo set_polarity")?;
+                pwm.enable().context("servo enable")?;
+                pwm
+            };
 
             Ok(Self { esc, servo })
         }
